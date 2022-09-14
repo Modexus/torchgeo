@@ -111,9 +111,6 @@ def get_positional_encodings(
         embed_dim, int(num_patches**0.5), cls_token=False, device=device
     )
 
-    if not channel_wise:
-        return positional_embeddings.unsqueeze(0)
-
     return positional_embeddings
 
 

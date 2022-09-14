@@ -15,7 +15,7 @@ experiment:
   module:
     model: "cae"
     encoder_name: "vit"
-    sensor: "naip"
+    sensor: "bigearthnet"
     imagenet_pretrained: False
     pretrained: False
     image_size: 120
@@ -28,22 +28,19 @@ experiment:
     mask_tokens_decoder: True
     mask_tokens_reduction_encoder: False
     mask_tokens_reduction_decoder: True
+    norm_pix_loss: False
     num_in_channels: 14
     num_out_channels: 14
-    embed_dim: 1024
-    depth: 6
+    embed_dim: 512
+    depth: 5
     num_heads: 1
     decoder_depth: 1
     decoder_num_heads: 1
     mask_fns:
-      - "random_masking_ratio"
       - "random_masking"
     mask_kwargs:
-      random_masking_ratio:
-        ratio: 0.4
-        probability: 1.0
       random_masking:
-        num_keep: 256
+        num_keep: 384
         probability: 1.0
   datamodule:
     root_dir: "/data/users/mike/data/BigEarthNetFixed"

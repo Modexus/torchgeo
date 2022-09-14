@@ -11,6 +11,7 @@ from .maevit import MaskedAutoencoderViT, MaskedViT
 from .rcf import RCF
 from .resnet import resnet18, resnet50
 from .tile2vec_resnet import ResNet18
+from .maehivit import MaskedAutoencoderHiViT
 
 __all__ = (
     "ChangeMixin",
@@ -26,6 +27,7 @@ __all__ = (
     "ResNet18",
     "MaskedAutoencoderViT",
     "MaskedViT",
+    "MaskedAutoencoderHiViT",
 )
 
 # https://stackoverflow.com/questions/40018681

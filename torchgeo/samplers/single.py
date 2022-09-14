@@ -5,7 +5,7 @@
 
 import abc
 import math
-from typing import Callable, Iterable, Iterator, Optional, Tuple, Union
+from typing import Callable, Iterable, Iterator, Optional, Tuple, Union, Sequence, Any
 
 import torch
 from rtree.index import Index, Property

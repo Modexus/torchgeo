@@ -1,5 +1,6 @@
 trainer:
-  gpus: [1]
+  gpus: [0, 1]
+  # strategy: "fsdp"
   max_epochs: 800
   precision: 32
   benchmark: True
@@ -18,6 +19,7 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
+    # resume_checkpoint: "last.ckpt"
     image_size: 120
     crop_size: 112
     patch_size: 8
@@ -29,22 +31,25 @@ experiment:
     mask_tokens_reduction_encoder: False
     mask_tokens_reduction_decoder: True
     keep_unreduced_decoder: False
-    num_in_channels: 14
-    num_out_channels: 14
-    embed_dim: 786
-    depth: 5
-    num_heads: 1
-    decoder_depth: 1
+    norm_pix_loss: False
+    num_in_channels: 12
+    num_out_channels: 12
+    use_checkpoint: False
+    embed_dim: 1024
+    depth: 8
+    num_heads: 2
+    decoder_embed_dim: 1024
+    decoder_depth: 2
     decoder_num_heads: 1
     mask_fns:
       - "random_masking_ratio"
       - "random_masking"
     mask_kwargs:
       random_masking_ratio:
-        ratio: 0.4
+        ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 384
+        num_keep: 256
         probability: 1.0
   datamodule:
     root_dir: "/data/users/mike/data/BigEarthNetFixed"

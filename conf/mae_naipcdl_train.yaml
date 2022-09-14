@@ -4,6 +4,7 @@ trainer:
   precision: 32
   benchmark: True
   replace_sampler_ddp: False
+  limit_train_batches: 827
 experiment:
   task: "mae_naipcdl_train"
   name: "mae_naipcdl_train"
@@ -26,29 +27,31 @@ experiment:
     mask_tokens_decoder: True
     mask_tokens_reduction_encoder: False
     mask_tokens_reduction_decoder: True
-    norm_pix_loss: True
+    norm_pix_loss: False
     num_in_channels: 4
     num_out_channels: 4
-    embed_dim: 64
-    depth: 5
-    num_heads: 1
-    decoder_depth: 1
+    mlp_ratio: 1
+    embed_dim: 1024
+    depth: 16
+    num_heads: 6
+    decoder_embed_dim: 512
+    decoder_depth: 4
     decoder_num_heads: 1
-    mask_fn:
+    mask_fns:
       - "random_masking_ratio"
       - "random_masking"
     mask_kwargs:
       random_masking_ratio:
-        ratio: 0.4
+        ratio: 0.6
         probability: 1.0
       random_masking:
-        num_keep: 256
+        num_keep: 196
         probability: 1.0
   datamodule:
     naip_root_dir: "/data/users/mike/data/NAIP"
-    batch_size: 4
-    train_length: 50000 #0
-    val_length: 3000 #0
+    batch_size: 64
+    train_length: 50000
+    val_length: 3000
     num_workers: 8
     patch_size: 240
     dataset_split: "roi_split_grid"

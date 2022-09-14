@@ -13,9 +13,10 @@ from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 
 from torchgeo.models.utils import reduce_mask_token
-
+from timm.scheduler import CosineLRScheduler
 from ..models import MaskedAutoencoderViT
 from ..utils import _to_tuple
 from .utils import generate_mask, pad_imgs_dims, patchify, unpatchify
@@ -36,6 +37,7 @@ def masked_reconstruction_loss(
     B, *_ = pred.shape
 
     target = patchify(target, patch_size)
+    _, PS, _ = target.shape
     target = target.view(pred.shape)
 
     if norm_pix_loss:
@@ -46,18 +48,9 @@ def masked_reconstruction_loss(
     loss = (pred - target) ** 2
     loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
 
+    # Only completely hidden patches contribute to the loss
+    mask = ((~mask.view(-1, PS)).sum(0) == 0).repeat(len(mask) // PS)
     loss = (loss * mask).sum() / (B * mask.sum())  # mean loss on removed patches
-
-    return cast(Tensor, loss)
-
-
-def reconstruction_loss(target: Tensor, pred: Tensor, patch_size: int) -> Tensor:
-    """Compute masked reconstruction loss."""
-    target = patchify(target, patch_size)
-    target = target.view(pred.shape)
-
-    loss = (pred - target) ** 2
-    loss = loss.mean()  # [N, L], mean loss per patch
 
     return cast(Tensor, loss)
 
@@ -86,7 +79,7 @@ class Augmentations(Module):
                 K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.6, 1.0),
+                    scale=(0.2, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),
@@ -140,11 +133,13 @@ class MAETask(LightningModule):
             image_size=self.crop_size,
             patch_size=self.patch_size,
             channel_wise=self.channel_wise,
+            use_checkpoint=self.hyperparams.get("use_checkpoint", False),
             embed_dim=self.embed_dim,
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
             dropout_rate=self.hyperparams.get("dropout_rate", 0.0),
             dropout_attn=self.hyperparams.get("dropout_attn", 0.0),
+            decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
             decoder_depth=self.hyperparams.get("expander_depth", 2),
             decoder_num_heads=self.hyperparams.get("expander_num_heads", 1),
             mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
@@ -210,23 +205,47 @@ class MAETask(LightningModule):
         optimizer_class = getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
         lr = self.hyperparams.get("lr", 1e-3)
         actual_lr = lr * self.B / 256
+        lr_min = self.hyperparams.get("min_lr", 1e-6)
+        warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
+        num_warmup = self.hyperparams.get("num_warmup", 5)
         betas = self.hyperparams.get("betas", (0.9, 0.95))
         optimizer = optimizer_class(
-            self.parameters(), lr=actual_lr, weight_decay=weight_decay, betas=betas
+            self.trainer.model.parameters(),
+            lr=actual_lr,
+            weight_decay=weight_decay,
+            betas=betas,
         )
 
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": CosineAnnealingLR(
-                    optimizer,
-                    self.trainer.max_epochs,
-                    self.hyperparams.get("min_lr", 1e-6),
+                "scheduler": CosineLRScheduler(
+                    optimizer=optimizer,
+                    t_initial=self.trainer.max_epochs
+                    * self.trainer.limit_train_batches,
+                    lr_min=lr_min,
+                    cycle_mul=1.0,
+                    cycle_decay=weight_decay,
+                    cycle_limit=1,
+                    warmup_t=num_warmup * self.trainer.limit_train_batches,
+                    warmup_lr_init=warmup_lr_init,
                 ),
+                "interval": "step",
+                "frequency": 1,
                 "monitor": "val_loss",
             },
         }
+
+    # Fix for timm scheduler: https://github.com/Lightning-AI/lightning/issues/5555
+    def lr_scheduler_step(
+        self, scheduler: LRSchedulerTypeUnion, optimizer_idx: int, metric: Any | None
+    ) -> None:
+        """Step the learning rate scheduler."""
+        if metric is None:
+            scheduler.step(epoch=self.global_step)
+        else:
+            scheduler.step(metric, epoch=self.global_step)
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         """Forward pass of the model.
@@ -242,7 +261,7 @@ class MAETask(LightningModule):
     def shared_step(self, stage: str, *args: Any, **kwargs: Any) -> dict[str, Tensor]:
         """TODO: Docstring."""
         batch = args[0]
-        x = batch["image"]
+        x = batch["image"][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
         _, self.C, *_ = x.shape
 
         with torch.no_grad():
@@ -282,9 +301,13 @@ class MAETask(LightningModule):
 
         if self.channel_wise:
             if self.channel_shuffle:
-                encoder_channels = torch.randperm(self.C, device=x.device).tolist()[
+                # encoder_channels = torch.randperm(self.C, device=x.device).tolist()[
+                #     : self.num_in_channels
+                # ]
+                encoder_channels = torch.arange(self.C, device=x.device).tolist()[
                     : self.num_in_channels
                 ]
+
                 decoder_channels = torch.randperm(self.C, device=x.device).tolist()[
                     : self.num_out_channels
                 ]

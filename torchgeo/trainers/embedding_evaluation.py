@@ -306,7 +306,7 @@ class EmbeddingEvaluator(LightningModule):
 
         optimizer_class = getattr(optim, self.hyperparams.get("optimizer", "SGD"))
         lr = self.hyperparams.get("lr", 2e-2)
-        actual_lr = lr * self.B / 256 * self.trainer.num_devices
+        actual_lr = lr * self.B / 256
         weight_decay = self.hyperparams.get("weight_decay", 1e-6)
         momentum = self.hyperparams.get("momentum", 0.9)
         optimizer = optimizer_class(
@@ -364,8 +364,9 @@ class EmbeddingEvaluator(LightningModule):
                 .flatten(-2)
             )
 
+        latent = latent.mean(dim=1)
         y_hat = self.classifier(latent)
-        y_hat = y_hat.mean(dim=1)
+        # y_hat = y_hat.mean(dim=1)
 
         return cast(Tensor, y_hat)
 
@@ -410,10 +411,12 @@ class EmbeddingEvaluator(LightningModule):
     ) -> Tensor:
         """TODO: Docstring."""
         y_hat = self.classify(latent)
-        loss = self.classifier_loss(y_hat, y.float())
 
         if self.multi_label:
+            loss = self.classifier_loss(y_hat, y.float())
             y_hat = y_hat.softmax(dim=-1)
+        else:
+            loss = self.classifier_loss(y_hat, y)
 
         metrics = self.metrics[stage](y_hat, y)
 

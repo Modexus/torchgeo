@@ -33,16 +33,6 @@ experiment:
     momentum: 0.9
     weight_decay: 0.000001
     learning_rate_schedule_patience: 6
-    mask_fn:
-      - "random_masking_ratio"
-      - "random_masking"
-    mask_kwargs:
-      random_masking_ratio:
-        ratio: 0.4
-        probability: 1.0
-      random_masking:
-        num_keep: 256
-        probability: 1.0
   datamodule:
     root_dir: "/data/users/mike/data/BigEarthNetFixed"
     bands: "all"

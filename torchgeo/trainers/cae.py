@@ -13,10 +13,11 @@ from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 
 from torchgeo.models.utils import reduce_mask_token
-
-from ..models import MaskedAutoencoderViT
+from timm.scheduler import CosineLRScheduler
+from ..models import MaskedAutoencoderHiViT
 from ..utils import _to_tuple
 from .utils import generate_mask, pad_imgs_dims, patchify, unpatchify
 
@@ -26,33 +27,30 @@ Module.__module__ = "torch.nn"
 
 
 def masked_reconstruction_loss(
-    target: Tensor, pred: Tensor, mask: Tensor, patch_size: int
+    target: Tensor,
+    pred: Tensor,
+    mask: Tensor,
+    patch_size: int,
+    norm_pix_loss: bool = False,
 ) -> Tensor:
     """Compute masked reconstruction loss."""
     B, *_ = pred.shape
 
     target = patchify(target, patch_size)
+    _, PS, _ = target.shape
     target = target.view(pred.shape)
+
+    if norm_pix_loss:
+        mean = target.mean(dim=-1, keepdim=True)
+        var = target.var(dim=-1, keepdim=True)
+        target = (target - mean) / (var + 1.0e-6) ** 0.5
 
     loss = (pred - target) ** 2
     loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
 
-    num_hidden = mask.sum()
-    if num_hidden == 0:
-        return cast(Tensor, loss.mean())
-
-    loss = (loss * mask).sum() / (B * num_hidden)  # mean loss on removed patches
-
-    return cast(Tensor, loss)
-
-
-def reconstruction_loss(target: Tensor, pred: Tensor, patch_size: int) -> Tensor:
-    """Compute masked reconstruction loss."""
-    target = patchify(target, patch_size)
-    target = target.view(pred.shape)
-
-    loss = (pred - target) ** 2
-    loss = loss.mean()  # [N, L], mean loss per patch
+    # Only completely hidden patches contribute to the loss
+    mask = ((~mask.view(-1, PS)).sum(0) == 0).repeat(len(mask) // PS)
+    loss = (loss * mask).sum() / (B * mask.sum())  # mean loss on removed patches
 
     return cast(Tensor, loss)
 
@@ -81,7 +79,7 @@ class Augmentations(Module):
                 K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.6, 1.0),
+                    scale=(0.2, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),
@@ -127,18 +125,21 @@ class CAETask(LightningModule):
         self.num_out_channels = self.hyperparams.get("num_out_channels", 3)
         self.B = self.hyperparams.get("batch_size", 64)
         self.num_patches = (self.crop_size // self.patch_size) ** 2
+        self.norm_pix_loss = self.hyperparams.get("norm_pix_loss", False)
 
-        self.model = MaskedAutoencoderViT(
+        self.model = MaskedAutoencoderHiViT(
             sensor=self.hyperparams["sensor"],
             bands=self.hyperparams.get("bands", "all"),
             image_size=self.crop_size,
             patch_size=self.patch_size,
             channel_wise=self.channel_wise,
+            mlp_ratio=self.hyperparams.get("mlp_ratio", 4),
             embed_dim=self.embed_dim,
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
             dropout_rate=self.hyperparams.get("dropout_rate", 0.0),
             dropout_attn=self.hyperparams.get("dropout_attn", 0.0),
+            decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
             decoder_depth=self.hyperparams.get("expander_depth", 2),
             decoder_num_heads=self.hyperparams.get("expander_num_heads", 1),
             mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
@@ -148,6 +149,9 @@ class CAETask(LightningModule):
             ),
             mask_tokens_reduction_decoder=self.hyperparams.get(
                 "mask_tokens_reduction_decoder", False
+            ),
+            keep_unreduced_decoder=self.hyperparams.get(
+                "keep_unreduced_decoder", False
             ),
         )
 
@@ -200,8 +204,11 @@ class CAETask(LightningModule):
 
         optimizer_class = getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
         lr = self.hyperparams.get("lr", 1e-3)
-        actual_lr = lr * self.B / 256 * self.trainer.num_devices
+        actual_lr = lr * self.B / 256
+        lr_min = self.hyperparams.get("min_lr", 1e-6)
+        warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
+        num_warmup = self.hyperparams.get("num_warmup", 5)
         betas = self.hyperparams.get("betas", (0.9, 0.95))
         optimizer = optimizer_class(
             self.parameters(), lr=actual_lr, weight_decay=weight_decay, betas=betas
@@ -210,14 +217,32 @@ class CAETask(LightningModule):
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": CosineAnnealingLR(
-                    optimizer,
-                    self.trainer.max_epochs,
-                    self.hyperparams.get("min_lr", 1e-6),
+                "scheduler": CosineLRScheduler(
+                    optimizer=optimizer,
+                    t_initial=self.trainer.max_epochs
+                    * self.trainer.limit_train_batches,
+                    lr_min=lr_min,
+                    cycle_mul=1.0,
+                    cycle_decay=weight_decay,
+                    cycle_limit=1,
+                    warmup_t=num_warmup * self.trainer.limit_train_batches,
+                    warmup_lr_init=warmup_lr_init,
                 ),
+                "interval": "step",
+                "frequency": 1,
                 "monitor": "val_loss",
             },
         }
+
+    # Fix for timm scheduler: https://github.com/Lightning-AI/lightning/issues/5555
+    def lr_scheduler_step(
+        self, scheduler: LRSchedulerTypeUnion, optimizer_idx: int, metric: Any | None
+    ) -> None:
+        """Step the learning rate scheduler."""
+        if metric is None:
+            scheduler.step(epoch=self.global_step)
+        else:
+            scheduler.step(metric, epoch=self.global_step)
 
     def forward(self, *args: Any, **kwargs: Any) -> Any:
         """Forward pass of the model.
@@ -241,8 +266,12 @@ class CAETask(LightningModule):
 
         item = self.forward(item)
 
-        item["loss"] = reconstruction_loss(
-            item["target"], item["pred"], self.patch_size
+        item["loss"] = masked_reconstruction_loss(
+            item["target"],
+            item["pred"],
+            item["mask_target"],
+            self.patch_size,
+            self.norm_pix_loss,
         )
 
         self.log(
@@ -259,11 +288,21 @@ class CAETask(LightningModule):
     def get_item(self, x: Tensor, stage: str) -> dict[str, Any]:
         """Preparation of the data for the forward pass."""
         target = self.augment(x, stage)
-        mask = generate_mask(
+        mask_input = generate_mask(
             self.mask_fns, self.mask_kwargs, self.num_patches, self.C, x.device
         )
+        # mask_input = (
+        #     torch.nn.functional.interpolate(
+        #         mask_input.unsqueeze(0).view(1, 4, 6, 6).float(),
+        #         scale_factor=self.patch_size,
+        #         mode="nearest-exact",
+        #     )
+        #     .squeeze()
+        #     .bool()
+        # )
 
         input = target.clone()
+        mask_target = mask_input
         encoder_channels = decoder_channels = []
 
         if self.channel_wise:
@@ -277,7 +316,8 @@ class CAETask(LightningModule):
 
                 input = input[:, encoder_channels]
                 target = target[:, decoder_channels]
-                mask = mask[encoder_channels]
+                mask_input = mask_input[encoder_channels]
+                mask_target = mask_target[decoder_channels]
             else:
                 encoder_channels = decoder_channels = torch.arange(
                     self.C, device=x.device
@@ -285,12 +325,14 @@ class CAETask(LightningModule):
 
             input = input.flatten(0, 1).unsqueeze(1)
             target = target.flatten(0, 1).unsqueeze(1)
-            mask = mask.flatten()
+            mask_input = mask_input.flatten()
+            mask_target = mask_target.flatten()
 
         return {
             "input": input,
             "target": target,
-            "mask": mask,
+            "mask": mask_input,
+            "mask_target": mask_target,
             "encoder_channels": encoder_channels,
             "decoder_channels": decoder_channels,
         }
@@ -317,7 +359,11 @@ class CAETask(LightningModule):
         item = self.shared_step("val", *args, **kwargs)
 
         # Only log images of first batch
-        if args[1] > 0 or self.trainer.num_devices > 1 and self.device.index != 1:
+        if (
+            self.trainer is None
+            or args[1] > 0
+            or (self.trainer.num_devices > 1 and self.device.index != 1)
+        ):
             return {}
 
         images = self.prepare_output(item)
@@ -335,7 +381,7 @@ class CAETask(LightningModule):
         Returns:
             output from the model
         """
-        input, target, pred, mask = (
+        input, target, pred, mask_input = (
             item["input"],
             item["target"],
             item["pred"],
@@ -348,12 +394,12 @@ class CAETask(LightningModule):
         input_patch = patchify(input, self.patch_size).view(
             self.B, self.num_in_channels * self.num_patches, -1
         )
-        input_patch = input_patch[:, ~mask]
+        input_patch = input_patch[:, ~mask_input]
         *_, H = input_patch.shape
 
         masked_input = torch.zeros((self.B, self.num_patches, H), device=input.device)
         masked_input = reduce_mask_token(
-            input_patch, mask, masked_input, self.num_patches
+            input_patch, mask_input, masked_input, self.num_patches
         )
 
         pred = unpatchify(pred, self.patch_size)

@@ -15,15 +15,15 @@ experiment:
     encoder_name: "vit"
     sensor: "naip"
     bands: "all"
+    image_size: 256
+    crop_size: 224
+    patch_size: 16
     batch_size: ${experiment.datamodule.batch_size}
     mean_patches: True
     channel_wise: True
-    patch_size: 16
     in_channels: 4
     out_channels: 1
     num_classes: 134
-    image_size: 256
-    crop_size: 224
     load_checkpoint: "last.ckpt"
     imagenet_pretrained: False
     lr: 0.02

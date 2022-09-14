@@ -1,11 +1,12 @@
 """MaskedVit."""
 
 from typing import cast
+from unittest.mock import patch
 
 import torch
-from kornia.contrib.vit import FeedForward, TransformerEncoderBlock
+from kornia.contrib.vit import FeedForward, MultiHeadAttention, ResidualAdd
 from torch import Tensor
-from torch.nn import Conv2d, LayerNorm, Module, Sequential, Linear
+from torch.nn import Conv2d, LayerNorm, Module, Sequential, Linear, Dropout
 
 from .utils import (
     get_mask_tokens,
@@ -19,6 +20,79 @@ IN_CHANNELS = {"sentinel2": {"all": 10}, "naip": {"all": 4}, "bigearthnet": {"al
 NUM_CLASSES = {"sentinel2": 17, "naip": 0}
 
 
+class TransformerEncoderBlock(Sequential):
+    def __init__(
+        self,
+        embed_dim: int,
+        num_heads: int,
+        dropout_rate: float,
+        dropout_attn: float,
+        mlp_ratio: int = 4,
+    ) -> None:
+        super().__init__(
+            ResidualAdd(
+                Sequential(
+                    LayerNorm(embed_dim),
+                    MultiHeadAttention(
+                        embed_dim, num_heads, dropout_attn, dropout_rate
+                    ),
+                    Dropout(dropout_rate),
+                )
+            ),
+            ResidualAdd(
+                Sequential(
+                    LayerNorm(embed_dim),
+                    FeedForward(
+                        embed_dim,
+                        mlp_ratio * embed_dim,
+                        embed_dim,
+                        dropout_rate=dropout_rate,
+                    ),
+                    Dropout(dropout_rate),
+                )
+            ),
+        )
+
+
+class PatchMerging(Module):
+    r"""Patch Merging Layer.
+    Args:
+        input_resolution (tuple[int]): Resolution of input feature.
+        dim (int): Number of input channels.
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
+    """
+
+    def __init__(self, input_resolution, dim, norm_layer=LayerNorm):
+        super().__init__()
+        self.input_resolution = input_resolution
+        self.dim = dim
+        self.reduction = Linear(4 * dim, 2 * dim, bias=False)
+        self.norm = norm_layer(2 * dim)
+
+    def forward(self, x):
+        """
+        x: B, H*W, C
+        """
+        H, W = self.input_resolution
+        B, L, C = x.shape
+        assert L == H * W, "input feature has wrong size"
+        assert H % 2 == 0 and W % 2 == 0, f"x size ({H}*{W}) are not even."
+
+        x = x.view(B, H, W, C)
+
+        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
+        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
+        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
+        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 C
+        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
+        x = x.view(B, -1, 4 * C)  # B H/2*W/2 4*C
+
+        x = self.reduction(x)
+        x = self.norm(x)
+
+        return x
+
+
 class TransformerEncoder(Module):
     """TransformerEncoder."""
 
@@ -29,19 +103,23 @@ class TransformerEncoder(Module):
         num_heads: int = 12,
         dropout_rate: float = 0.0,
         dropout_attn: float = 0.0,
-        use_checkpoint: bool = False,
+        mlp_ratio: int = 4,
     ) -> None:
         """Initialize a TransformerEncoder."""
         super().__init__()
-        self.use_checkpoint = use_checkpoint
-
         self.blocks = Sequential(
             *(
                 TransformerEncoderBlock(
-                    embed_dim, num_heads, dropout_rate, dropout_attn
+                    embed_dim, num_heads, dropout_rate, dropout_attn, mlp_ratio
                 )
                 for _ in range(depth)
             )
+        )
+
+        num_patches_layer = [2, 2, 2, 2]
+        embed_dims = [embed_dim * num_patches for num_patches in num_patches_layer]
+        self.upscale = Sequential(
+            *(PatchMerging(2, dim=curr_embed_dim) for curr_embed_dim in embed_dims)
         )
 
     def forward(self, x: Tensor) -> Tensor:
@@ -64,15 +142,13 @@ class EncoderEmbedding(Module):
         """Initialize the encoder embedding module."""
         super().__init__()
 
-        self.num_patches = (image_size // patch_size) ** 2
+        self.patch_size = patch_size
+        self.num_patches = (image_size // 1) ** 2
         self.channel_wise = channel_wise
         self.mask_tokens_encoder = mask_tokens_encoder
 
         self.embedder = Conv2d(
-            input_dim if not channel_wise else 1,
-            embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size,
+            input_dim if not channel_wise else 1, embed_dim, kernel_size=1, stride=1
         )
 
         self.apply(init_weights)
@@ -84,17 +160,24 @@ class EncoderEmbedding(Module):
         Secondly, add the positional embeddings for each patch.
         Finally, add the channel embeddings if channels are passed.
         """
-        x = self.embedder(x)
+        x = (
+            x.unfold(2, self.patch_size, self.patch_size)
+            .unfold(-2, self.patch_size, self.patch_size)
+            .permute(0, 2, 3, 4, 5, 1)
+            .flatten(1, 2)
+            .flatten(2, 3)
+        )
+        #x = self.embedder(x)
 
         B, H, PW, _ = x.shape
-        x = x.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
-        *_, H = x.shape
+        # x = x.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
+        # *_, H = x.shape
 
-        x += get_positional_encodings(H, self.num_patches, self.channel_wise, x.device)
+        # x += get_positional_encodings(H, self.num_patches, self.channel_wise, x.device)
 
-        if self.channel_wise:
-            x = x.reshape(-1, len(channels) * PW**2, H)
-            x += get_channel_encodings(H, channels, self.num_patches, x.device)
+        # if self.channel_wise:
+        #     x = x.reshape(-1, len(channels) * PW**2, H)
+        #     x += get_channel_encodings(H, channels, self.num_patches, x.device)
 
         return x
 
@@ -108,7 +191,7 @@ class MaskedEncoderViT(Module):
         in_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        mlp_ratio: int = 4,
         embed_dim: int = 768,
         depth: int = 12,
         num_heads: int = 12,
@@ -138,7 +221,7 @@ class MaskedEncoderViT(Module):
         self.num_patches = self.embed_module.num_patches
 
         self.encoder = TransformerEncoder(
-            embed_dim, depth, num_heads, dropout_rate, dropout_attn, use_checkpoint
+            embed_dim, depth, num_heads, dropout_rate, dropout_attn, mlp_ratio
         )
         self.norm = LayerNorm(embed_dim)
 
@@ -193,7 +276,7 @@ class MaskedEncoderViT(Module):
         mask = cast(Tensor | None, item.get("mask", None))
 
         x = self.embed_module(x, channels)
-
+        x = x.view(64, 36 * 4, 1600, 1)
         if mask is not None:
             x = x[:, ~mask]
 
@@ -203,7 +286,7 @@ class MaskedEncoderViT(Module):
         x = self.encoder(x)
         x = self.norm(x)
 
-        if self.channel_wise and mask is not None:
+        if self.channel_wise:
             x, item["mask_decoder"] = self.mean_channels(x, mask)
 
         return x
@@ -235,7 +318,7 @@ class MaskedDecoderViT(Module):
         out_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        mlp_ratio: int = 4,
         depth: int = 2,
         num_heads: int = 1,
         dropout_rate: float = 0.0,
@@ -272,7 +355,7 @@ class MaskedDecoderViT(Module):
                 num_heads,
                 dropout_rate,
                 dropout_attn,
-                use_checkpoint,
+                mlp_ratio,
             )
 
         self.apply(init_weights)
@@ -343,7 +426,7 @@ class MaskedDecoderViT(Module):
         return x
 
 
-class MaskedAutoencoderViT(Module):
+class MaskedAutoencoderHiViT(Module):
     """Vision transformer (ViT) module."""
 
     def __init__(
@@ -353,7 +436,7 @@ class MaskedAutoencoderViT(Module):
         image_size: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        mlp_ratio: int = 4,
         embed_dim: int = 1024,
         depth: int = 24,
         num_heads: int = 16,
@@ -371,14 +454,12 @@ class MaskedAutoencoderViT(Module):
         """Initialize a new VisionTransformer model."""
         super().__init__()
 
-        embed_dim = (embed_dim // 4 // 4) * 4 * 4
-
         self.encoder = MaskedEncoderViT(
             image_size=image_size,
             in_channels=IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
-            use_checkpoint=use_checkpoint,
+            mlp_ratio=mlp_ratio,
             embed_dim=embed_dim,
             depth=depth,
             num_heads=num_heads,
@@ -396,7 +477,7 @@ class MaskedAutoencoderViT(Module):
             out_channels=IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
-            use_checkpoint=use_checkpoint,
+            mlp_ratio=mlp_ratio,
             depth=decoder_depth,
             num_heads=decoder_num_heads,
             mask_tokens_decoder=mask_tokens_decoder,

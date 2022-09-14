@@ -14,7 +14,12 @@ from omegaconf.errors import ConfigAttributeError
 from pytorch_lightning import LightningDataModule, LightningModule, Trainer
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning import seed_everything
-from pytorch_lightning.callbacks import Callback, EarlyStopping, ModelCheckpoint
+from pytorch_lightning.callbacks import (
+    Callback,
+    EarlyStopping,
+    ModelCheckpoint,
+    LearningRateMonitor,
+)
 
 from torchgeo.datamodules import (
     BigEarthNetDataModule,
@@ -84,6 +89,8 @@ TASK_TO_MODULES_MAPPING: Dict[
     "cae_naipcdl_evaluate": (EmbeddingEvaluator, NAIPCDLDataModule),
     "mae_bigearthnet_train": (MAETask, BigEarthNetDataModule),
     "mae_bigearthnet_evaluate": (EmbeddingEvaluator, BigEarthNetDataModule),
+    "cae_bigearthnet_train": (CAETask, BigEarthNetDataModule),
+    "cae_bigearthnet_evaluate": (EmbeddingEvaluator, BigEarthNetDataModule),
 }
 
 
@@ -263,7 +270,7 @@ def main(conf: DictConfig) -> None:
     callbacks: List[Callback] = []
     if conf.program.overwrite:
         checkpoint_callback = ModelCheckpoint(
-            dirpath=run_dir, every_n_epochs=20, save_last=True
+            dirpath=run_dir, save_last=True, save_top_k=0
         )
         callbacks.append(checkpoint_callback)
 
@@ -272,6 +279,9 @@ def main(conf: DictConfig) -> None:
             monitor="val_loss", min_delta=0.00, patience=18
         )
         callbacks.append(early_stopping_callback)
+
+    learning_rate_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks.append(learning_rate_monitor)
 
     trainer_args["callbacks"] = callbacks
     trainer_args["logger"] = logger
@@ -293,10 +303,16 @@ def main(conf: DictConfig) -> None:
     ######################################
     # Run experiment
     ######################################
+    try:
+        if len(ckpt_name := conf.experiment.module.resume_checkpoint) > 0:
+            ckpt_path = os.path.join(experiment_dir, run_name, ckpt_name)
+    except ConfigAttributeError:
+        ckpt_path = None
+
     if conf.experiment.run.fit:
-        trainer.fit(model=task, datamodule=datamodule)
+        trainer.fit(model=task, datamodule=datamodule, ckpt_path=ckpt_path)
     if conf.experiment.run.test:
-        trainer.test(model=task, datamodule=datamodule)
+        trainer.test(model=task, datamodule=datamodule, ckpt_path=ckpt_path)
 
 
 if __name__ == "__main__":

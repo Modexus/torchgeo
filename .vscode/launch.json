@@ -132,7 +132,7 @@
                 "logger.offline=True",
                 "trainer.gpus=[0]"
             ],
-            "justMyCode": true
+            "justMyCode": false
         },
         {
             "name": "Python: mae_naipcdl_evaluate",
@@ -240,7 +240,7 @@
                 "logger.offline=True",
                 "trainer.gpus=[0]"
             ],
-            "justMyCode": true
+            "justMyCode": false
         },
         {
             "name": "Python: cae_naipcdl_evaluate",
@@ -273,7 +273,7 @@
                 "program.log_dir=/data/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[1]"
+                "trainer.gpus=[0, 1]",
             ],
             "justMyCode": true
         },
@@ -290,7 +290,7 @@
                 "program.log_dir=/data/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[1]"
+                "trainer.gpus=[0]"
             ],
             "justMyCode": true
         },

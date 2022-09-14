@@ -153,8 +153,6 @@ class MSAETask(LightningModule):
             image_size=self.crop_size,
             patch_size=self.patch_size,
             channel_wise=self.channel_wise,
-            embed_token=self.embed_token,
-            embed_token_reduction=self.embed_token_reduction,
             embed_dim=self.embed_dim,
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
