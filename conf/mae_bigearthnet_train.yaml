@@ -1,12 +1,15 @@
 trainer:
-  gpus: [0, 1]
-  # strategy: "fsdp"
-  max_epochs: 800
-  precision: 32
+  accelerator: "gpu"
+  devices: [0, 1]
+  # strategy: "deepspeed_stage_2"
+  precision: "bf16"
   benchmark: True
   replace_sampler_ddp: False
-  limit_train_batches: 800
-  limit_val_batches: 50 
+  enable_progress_bar: True
+  fast_dev_run: False
+  max_epochs: 800
+  # limit_train_batches: 800
+  # limit_val_batches: 50 
 experiment:
   task: "mae_bigearthnet_train"
   name: "mae_bigearthnet_train"
@@ -30,17 +33,17 @@ experiment:
     mask_tokens_decoder: True
     mask_tokens_reduction_encoder: False
     mask_tokens_reduction_decoder: True
-    keep_unreduced_decoder: False
     norm_pix_loss: False
     num_in_channels: 12
     num_out_channels: 12
     use_checkpoint: False
+    mlp_ratio: 4.0
     embed_dim: 1024
-    depth: 8
-    num_heads: 2
+    depth: 24
+    num_heads: 16
     decoder_embed_dim: 1024
-    decoder_depth: 2
-    decoder_num_heads: 1
+    decoder_depth: 8
+    decoder_num_heads: 16
     mask_fns:
       - "random_masking_ratio"
       - "random_masking"
@@ -49,16 +52,16 @@ experiment:
         ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 256
+        num_keep: 100 # 100
         probability: 1.0
   datamodule:
-    root_dir: "/data/users/mike/data/BigEarthNetFixed"
+    root_dir: "/scratch/users/mike/data/BigEarthNet"
     bands: "all"
     num_classes: 19
-    batch_size: 64
-    num_workers: 8
+    batch_size: 256
+    num_workers: 16
     pin_memory: True
-    prefetch_factor: 5
+    prefetch_factor: 2
     persistent_workers: True
     load_target: False
 logger:

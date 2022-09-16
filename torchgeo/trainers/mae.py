@@ -8,10 +8,9 @@ from typing import Any, cast
 import torch
 import wandb
 from kornia import augmentation as K
-from pytorch_lightning.core.lightning import LightningModule
+from pytorch_lightning.core.module import LightningModule
 from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
 from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 
@@ -24,6 +23,9 @@ from .utils import generate_mask, pad_imgs_dims, patchify, unpatchify
 # https://github.com/pytorch/pytorch/issues/60979
 # https://github.com/pytorch/pytorch/pull/61045
 Module.__module__ = "torch.nn"
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 
 def masked_reconstruction_loss(
@@ -137,11 +139,10 @@ class MAETask(LightningModule):
             embed_dim=self.embed_dim,
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
-            dropout_rate=self.hyperparams.get("dropout_rate", 0.0),
-            dropout_attn=self.hyperparams.get("dropout_attn", 0.0),
+            mlp_ratio=self.hyperparams.get("mlp_ratio", 4.0),
             decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
-            decoder_depth=self.hyperparams.get("expander_depth", 2),
-            decoder_num_heads=self.hyperparams.get("expander_num_heads", 1),
+            decoder_depth=self.hyperparams.get("decoder_depth", 2),
+            decoder_num_heads=self.hyperparams.get("decoder_num_heads", 1),
             mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
             mask_tokens_decoder=self.hyperparams.get("mask_tokens_decoder", False),
             mask_tokens_reduction_encoder=self.hyperparams.get(
@@ -149,9 +150,6 @@ class MAETask(LightningModule):
             ),
             mask_tokens_reduction_decoder=self.hyperparams.get(
                 "mask_tokens_reduction_decoder", False
-            ),
-            keep_unreduced_decoder=self.hyperparams.get(
-                "keep_unreduced_decoder", False
             ),
         )
 
@@ -261,11 +259,11 @@ class MAETask(LightningModule):
     def shared_step(self, stage: str, *args: Any, **kwargs: Any) -> dict[str, Tensor]:
         """TODO: Docstring."""
         batch = args[0]
-        x = batch["image"][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
-        _, self.C, *_ = x.shape
+        item = batch["image"][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        _, self.C, *_ = item.shape
 
         with torch.no_grad():
-            item = self.get_item(x, stage)
+            item = self.get_item(item, stage)
 
         item = self.forward(item)
 
@@ -281,10 +279,13 @@ class MAETask(LightningModule):
             f"{stage}_loss",
             item["loss"],
             on_step=stage == "train",
-            on_epoch=True,
+            on_epoch=stage != "train",
             batch_size=self.B,
             sync_dist=stage != "train",
         )
+
+        if stage == "train":
+            return {"loss": item["loss"]}
 
         return item
 
@@ -360,7 +361,7 @@ class MAETask(LightningModule):
         if (
             self.trainer is None
             or args[1] > 0
-            or (self.trainer.num_devices > 1 and self.device.index != 1)
+            or (self.trainer.num_devices > 1 and self.device.index != 0)
         ):
             return {}
 
@@ -395,7 +396,9 @@ class MAETask(LightningModule):
         input_patch = input_patch[:, ~mask_input]
         *_, H = input_patch.shape
 
-        masked_input = torch.zeros((self.B, self.num_patches, H), device=input.device)
+        masked_input = torch.zeros(
+            (self.B, self.num_patches, H), device=input.device, dtype=input_patch.dtype
+        )
         masked_input = reduce_mask_token(
             input_patch, mask_input, masked_input, self.num_patches
         )
@@ -421,7 +424,7 @@ class MAETask(LightningModule):
         | list[list[Tensor | dict[str, Any]]],
     ) -> None:
         """Log images."""
-        if self.trainer.num_devices > 1 and self.device.index != 1:
+        if self.trainer.num_devices > 1 and self.device.index != 0:
             return
 
         images = validation_step_outputs[0]["images"]  # type: ignore

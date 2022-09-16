@@ -160,10 +160,11 @@ def get_mask_tokens(
     embed_dim: int,
     num_patches: int,
     channel_wise: bool = False,
+    dtype: str | torch.dtype = torch.float,
     device: str | torch.device = "cpu",
 ) -> Tensor:
     """Get the mask token."""
-    mask_tokens = -torch.ones(num_patches, embed_dim, device=device)
+    mask_tokens = -torch.ones(num_patches, embed_dim, device=device, dtype=dtype)
     mask_tokens += get_positional_encodings(
         embed_dim, num_patches, channel_wise, device
     )

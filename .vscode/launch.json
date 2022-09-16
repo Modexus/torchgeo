@@ -269,11 +269,10 @@
             "args": [
                 "config_file=conf/mae_bigearthnet_train.yaml",
                 "program.seed=666",
-                "program.output_dir=/data/users/mike/experiments",
-                "program.log_dir=/data/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[0, 1]",
+                "trainer.accelerator=gpu",
+                "trainer.devices=[0, 1]",
             ],
             "justMyCode": true
         },

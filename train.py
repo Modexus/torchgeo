@@ -260,7 +260,11 @@ def main(conf: DictConfig) -> None:
             log_model=(not offline),
             offline=offline,
         )
-        if "gpus" not in trainer_args or len(trainer_args["gpus"]) == 1:
+        if (
+            "devices" not in trainer_args
+            or len(trainer_args["devices"]) == 1
+            and wandb.run is not None
+        ):
             wandb.run.log_code("torchgeo")
     else:
         raise ValueError(
@@ -280,21 +284,13 @@ def main(conf: DictConfig) -> None:
         )
         callbacks.append(early_stopping_callback)
 
-    learning_rate_monitor = LearningRateMonitor(logging_interval="step")
-    callbacks.append(learning_rate_monitor)
+    # learning_rate_monitor = LearningRateMonitor(logging_interval="step")
+    # callbacks.append(learning_rate_monitor)
 
     trainer_args["callbacks"] = callbacks
     trainer_args["logger"] = logger
     trainer_args["default_root_dir"] = experiment_dir
 
-    if "gpus" in trainer_args and len(trainer_args["gpus"]) > 1:
-        from pytorch_lightning.strategies import DDPStrategy
-
-        trainer = Trainer(
-            **trainer_args,
-            strategy=DDPStrategy(find_unused_parameters=False, static_graph=True),
-        )
-    else:
         trainer = Trainer(**trainer_args)
 
     if trainer_args.get("auto_lr_find"):
