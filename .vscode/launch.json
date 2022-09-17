@@ -274,7 +274,7 @@
                 "trainer.accelerator=gpu",
                 "trainer.devices=[0, 1]",
             ],
-            "justMyCode": true
+            "justMyCode": false
         },
         {
             "name": "Python: mae_bigearthnet_evaluate",

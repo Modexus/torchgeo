@@ -291,7 +291,7 @@ def main(conf: DictConfig) -> None:
     trainer_args["logger"] = logger
     trainer_args["default_root_dir"] = experiment_dir
 
-        trainer = Trainer(**trainer_args)
+    trainer = Trainer(**trainer_args)
 
     if trainer_args.get("auto_lr_find"):
         trainer.tune(model=task, datamodule=datamodule)
