@@ -6,17 +6,18 @@
 from typing import Any, cast
 
 import torch
-import wandb
 from kornia import augmentation as K
 from pytorch_lightning.core.lightning import LightningModule
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
+from timm.scheduler import CosineLRScheduler
 from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 
+import wandb
 from torchgeo.models.utils import reduce_mask_token
-from timm.scheduler import CosineLRScheduler
+
 from ..models import MaskedAutoencoderHiViT
 from ..utils import _to_tuple
 from .utils import generate_mask, pad_imgs_dims, patchify, unpatchify

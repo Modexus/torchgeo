@@ -7,13 +7,14 @@ from typing import Any, cast
 
 import torch
 import torch.nn.functional as F
-import wandb
 from kornia import augmentation as K
 from pytorch_lightning.core.lightning import LightningModule
 from torch import Tensor, optim
 from torch.nn import Module, Sequential
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
+
+import wandb
 
 from ..models import MaskedAutoencoderViT
 from ..utils import _to_tuple

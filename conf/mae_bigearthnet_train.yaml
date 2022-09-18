@@ -1,15 +1,13 @@
 trainer:
   accelerator: "gpu"
-  devices: [0, 1]
-  # strategy: "deepspeed_stage_2"
+  devices: [0,1,2,3]
   precision: "bf16"
-  benchmark: True
-  replace_sampler_ddp: False
-  enable_progress_bar: True
-  fast_dev_run: False
+  accumulate_grad_batches: 4
   max_epochs: 800
-  # limit_train_batches: 800
-  # limit_val_batches: 50 
+  limit_train_batches: 0.125
+  limit_val_batches: 0.125
+  benchmark: True
+  fast_dev_run: False
 experiment:
   task: "mae_bigearthnet_train"
   name: "mae_bigearthnet_train"
@@ -52,14 +50,14 @@ experiment:
         ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 100 # 100
+        num_keep: 196 # 100
         probability: 1.0
   datamodule:
-    root_dir: "/scratch/users/mike/data/BigEarthNet"
+    root_dir: "/scratch/users/mike/data/BigEarthNetStacked"
     bands: "all"
     num_classes: 19
     batch_size: 256
-    num_workers: 16
+    num_workers: 12
     pin_memory: True
     prefetch_factor: 2
     persistent_workers: True

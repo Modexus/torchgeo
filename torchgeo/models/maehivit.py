@@ -6,12 +6,12 @@ from unittest.mock import patch
 import torch
 from kornia.contrib.vit import FeedForward, MultiHeadAttention, ResidualAdd
 from torch import Tensor
-from torch.nn import Conv2d, LayerNorm, Module, Sequential, Linear, Dropout
+from torch.nn import Conv2d, Dropout, LayerNorm, Linear, Module, Sequential
 
 from .utils import (
+    get_channel_encodings,
     get_mask_tokens,
     get_positional_encodings,
-    get_channel_encodings,
     init_weights,
     reduce_mask_token,
 )
@@ -167,7 +167,7 @@ class EncoderEmbedding(Module):
             .flatten(1, 2)
             .flatten(2, 3)
         )
-        #x = self.embedder(x)
+        # x = self.embedder(x)
 
         B, H, PW, _ = x.shape
         # x = x.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH

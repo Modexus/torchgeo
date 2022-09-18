@@ -8,7 +8,6 @@
 import os
 from typing import Any, Dict, List, Tuple, Type, cast
 
-import wandb
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.errors import ConfigAttributeError
 from pytorch_lightning import LightningDataModule, LightningModule, Trainer
@@ -17,10 +16,13 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.callbacks import (
     Callback,
     EarlyStopping,
-    ModelCheckpoint,
     LearningRateMonitor,
+    ModelCheckpoint,
 )
+from pytorch_lightning.strategies import DeepSpeedStrategy
+from pytorch_lightning.strategies.fully_sharded import DDPFullyShardedStrategy
 
+import wandb
 from torchgeo.datamodules import (
     BigEarthNetDataModule,
     ChesapeakeCVPRDataModule,
@@ -284,14 +286,22 @@ def main(conf: DictConfig) -> None:
         )
         callbacks.append(early_stopping_callback)
 
-    # learning_rate_monitor = LearningRateMonitor(logging_interval="step")
-    # callbacks.append(learning_rate_monitor)
+    learning_rate_monitor = LearningRateMonitor(logging_interval="step")
+    callbacks.append(learning_rate_monitor)
 
     trainer_args["callbacks"] = callbacks
     trainer_args["logger"] = logger
     trainer_args["default_root_dir"] = experiment_dir
 
-    trainer = Trainer(**trainer_args)
+    trainer = Trainer(
+        **trainer_args,
+        strategy=DeepSpeedStrategy(
+            stage=1,
+            allgather_bucket_size=5e8,
+            reduce_bucket_size=5e8,
+            logging_batch_size_per_gpu=task_args["batch_size"],
+        ),
+    )
 
     if trainer_args.get("auto_lr_find"):
         trainer.tune(model=task, datamodule=datamodule)

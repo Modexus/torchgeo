@@ -6,16 +6,18 @@
 from typing import Any, cast
 
 import torch
-import wandb
+from deepspeed.ops.adam import FusedAdam
 from kornia import augmentation as K
 from pytorch_lightning.core.module import LightningModule
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
+from timm.scheduler import CosineLRScheduler
 from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
 from torchvision.utils import make_grid
-from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 
+import wandb
 from torchgeo.models.utils import reduce_mask_token
-from timm.scheduler import CosineLRScheduler
+
 from ..models import MaskedAutoencoderViT
 from ..utils import _to_tuple
 from .utils import generate_mask, pad_imgs_dims, patchify, unpatchify
@@ -128,6 +130,7 @@ class MAETask(LightningModule):
         self.B = self.hyperparams.get("batch_size", 64)
         self.num_patches = (self.crop_size // self.patch_size) ** 2
         self.norm_pix_loss = self.hyperparams.get("norm_pix_loss", False)
+        self.use_checkpoint = self.hyperparams.get("use_checkpoint", False)
 
         self.model = MaskedAutoencoderViT(
             sensor=self.hyperparams["sensor"],
@@ -135,7 +138,7 @@ class MAETask(LightningModule):
             image_size=self.crop_size,
             patch_size=self.patch_size,
             channel_wise=self.channel_wise,
-            use_checkpoint=self.hyperparams.get("use_checkpoint", False),
+            use_checkpoint=self.use_checkpoint,
             embed_dim=self.embed_dim,
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
@@ -163,6 +166,10 @@ class MAETask(LightningModule):
             },
         )
 
+        image_size = _to_tuple(self.image_size)
+        crop_size = _to_tuple(self.crop_size)
+        self.augment = Augmentations(image_size, crop_size)
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a LightningModule for pre-training a model with BYOL.
 
@@ -183,13 +190,6 @@ class MAETask(LightningModule):
 
         self.config_task()
 
-    def setup(self, stage: str | None = None) -> None:
-        """Configures the task based on kwargs parameters passed to the constructor."""
-        image_size = _to_tuple(self.image_size)
-        crop_size = _to_tuple(self.crop_size)
-
-        self.augment = Augmentations(image_size, crop_size)
-
     def configure_optimizers(self) -> dict[str, Any]:
         """Initialize the optimizer and learning rate scheduler.
 
@@ -200,7 +200,9 @@ class MAETask(LightningModule):
         if self.trainer is None:
             return {}
 
-        optimizer_class = getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
+        optimizer_class = (
+            FusedAdam  # get_attr(optim, self.hyperparams.get("optimizer", "AdamW"))
+        )
         lr = self.hyperparams.get("lr", 1e-3)
         actual_lr = lr * self.B / 256
         lr_min = self.hyperparams.get("min_lr", 1e-6)
@@ -289,11 +291,15 @@ class MAETask(LightningModule):
 
         return item
 
-    def get_item(self, x: Tensor, stage: str) -> dict[str, Any]:
+    def get_item(self, target: Tensor, stage: str) -> dict[str, Any]:
         """Preparation of the data for the forward pass."""
-        target = self.augment(x, stage)
+        target = (
+            self.augment(target, stage)
+            if target.dtype != torch.bfloat16
+            else self.augment(target.half(), stage).bfloat16()
+        )
         mask_input = generate_mask(
-            self.mask_fns, self.mask_kwargs, self.num_patches, self.C, x.device
+            self.mask_fns, self.mask_kwargs, self.num_patches, self.C, target.device
         )
 
         input = target.clone()
@@ -305,13 +311,13 @@ class MAETask(LightningModule):
                 # encoder_channels = torch.randperm(self.C, device=x.device).tolist()[
                 #     : self.num_in_channels
                 # ]
-                encoder_channels = torch.arange(self.C, device=x.device).tolist()[
+                encoder_channels = torch.arange(self.C, device=target.device).tolist()[
                     : self.num_in_channels
                 ]
 
-                decoder_channels = torch.randperm(self.C, device=x.device).tolist()[
-                    : self.num_out_channels
-                ]
+                decoder_channels = torch.randperm(
+                    self.C, device=target.device
+                ).tolist()[: self.num_out_channels]
 
                 input = input[:, encoder_channels]
                 target = target[:, decoder_channels]
@@ -319,7 +325,7 @@ class MAETask(LightningModule):
                 mask_target = mask_target[decoder_channels]
             else:
                 encoder_channels = decoder_channels = torch.arange(
-                    self.C, device=x.device
+                    self.C, device=target.device
                 ).tolist()
 
             input = input.flatten(0, 1).unsqueeze(1)

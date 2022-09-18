@@ -272,7 +272,7 @@
                 "program.overwrite=False",
                 "logger.offline=True",
                 "trainer.accelerator=gpu",
-                "trainer.devices=[0, 1]",
+                "trainer.devices=[0]",
             ],
             "justMyCode": false
         },

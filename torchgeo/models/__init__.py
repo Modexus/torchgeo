@@ -7,11 +7,11 @@ from .changestar import ChangeMixin, ChangeStar, ChangeStarFarSeg
 from .farseg import FarSeg
 from .fcn import FCN
 from .fcsiam import FCSiamConc, FCSiamDiff
+from .maehivit import MaskedAutoencoderHiViT
 from .maevit import MaskedAutoencoderViT, MaskedViT
 from .rcf import RCF
 from .resnet import resnet18, resnet50
 from .tile2vec_resnet import ResNet18
-from .maehivit import MaskedAutoencoderHiViT
 
 __all__ = (
     "ChangeMixin",

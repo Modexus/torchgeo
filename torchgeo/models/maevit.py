@@ -3,16 +3,15 @@
 from typing import cast
 
 import torch
-from torch import Tensor
-from torch.nn import Conv2d, LayerNorm, Module, Sequential, Linear
-from timm.models.vision_transformer import Block, ResPostBlock
 from timm.models.layers import Mlp
-from fairscale.nn.checkpoint import checkpoint_wrapper
+from timm.models.vision_transformer import Block
+from torch import Tensor
+from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential
 
 from .utils import (
+    get_channel_encodings,
     get_mask_tokens,
     get_positional_encodings,
-    get_channel_encodings,
     init_weights,
     reduce_mask_token,
 )
@@ -43,16 +42,6 @@ class TransformerEncoder(Module):
                     num_heads=num_heads,
                     mlp_ratio=mlp_ratio,
                     qkv_bias=True,
-                )
-                if not use_checkpoint
-                else checkpoint_wrapper(
-                    Block(
-                        dim=embed_dim,
-                        num_heads=num_heads,
-                        mlp_ratio=mlp_ratio,
-                        qkv_bias=True,
-                    ),
-                    offload_to_cpu=False,
                 )
                 for _ in range(depth)
             )
@@ -359,8 +348,6 @@ class MaskedAutoencoderViT(Module):
     ) -> None:
         """Initialize a new VisionTransformer model."""
         super().__init__()
-
-        embed_dim = (embed_dim // 4 // 4) * 4 * 4
 
         self.encoder = MaskedEncoderViT(
             image_size=image_size,
