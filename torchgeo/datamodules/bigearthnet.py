@@ -10,8 +10,11 @@ import pytorch_lightning as pl
 import torch
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
-
+import os
 from ..datasets import BigEarthNet
+from ffcv.loader import Loader, OrderOption
+from ffcv.fields.decoders import NDArrayDecoder
+from ffcv.transforms import ToTensor
 
 # https://github.com/pytorch/pytorch/issues/60979
 # https://github.com/pytorch/pytorch/pull/61045
@@ -83,6 +86,9 @@ class BigEarthNetDataModule(pl.LightningDataModule):
         prefetch_factor: int = 10,
         persistent_workers: bool = False,
         load_target: bool = True,
+        use_ffcv: bool = False,
+        distributed: bool = False,
+        batches_ahead: int = 3,
         **kwargs: Any,
     ) -> None:
         """Initialize a LightningDataModule for BigEarthNet based DataLoaders.
@@ -105,6 +111,9 @@ class BigEarthNetDataModule(pl.LightningDataModule):
         self.prefetch_factor = prefetch_factor
         self.persistent_workers = persistent_workers
         self.load_target = load_target
+        self.use_ffcv = use_ffcv
+        self.distributed = distributed
+        self.batches_ahead = batches_ahead
 
         if bands == "all":
             self.mins = self.band_mins[:, None, None]
@@ -128,6 +137,23 @@ class BigEarthNetDataModule(pl.LightningDataModule):
 
         This method is only called once per run.
         """
+        if self.use_ffcv:
+            self.train_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_train.beton"
+            )
+            self.val_dataset_path = os.path.join(self.root_dir, "BigEarthNet_val.beton")
+            self.test_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_test.beton"
+            )
+
+            if (
+                not os.path.isfile(self.train_dataset_path)
+                or not os.path.isfile(self.val_dataset_path)
+                or not os.path.isfile(self.test_dataset_path)
+            ):
+                raise ValueError("FFCV files not found in root_dir.")
+            return
+
         BigEarthNet(self.root_dir, split="train", bands=self.bands, checksum=False)
 
     def setup(self, stage: Optional[str] = None) -> None:
@@ -135,6 +161,29 @@ class BigEarthNetDataModule(pl.LightningDataModule):
 
         This method is called once per GPU per run.
         """
+        if self.use_ffcv:
+            self.train_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_train.beton"
+            )
+            self.val_dataset_path = os.path.join(self.root_dir, "BigEarthNet_val.beton")
+            self.test_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_test.beton"
+            )
+
+            self.train_pipeline = {
+                "image": [NDArrayDecoder(), ToTensor()],
+                "label": [NDArrayDecoder(), ToTensor()],
+            }
+            self.val_pipeline = {
+                "image": [NDArrayDecoder(), ToTensor()],
+                "label": [NDArrayDecoder(), ToTensor()],
+            }
+            self.test_pipeline = {
+                "image": [NDArrayDecoder(), ToTensor()],
+                "label": [NDArrayDecoder(), ToTensor()],
+            }
+            return
+
         transforms = Compose([self.preprocess])
         self.train_dataset = BigEarthNet(
             self.root_dir,
@@ -163,6 +212,20 @@ class BigEarthNetDataModule(pl.LightningDataModule):
 
     def train_dataloader(self) -> DataLoader[Any]:
         """Return a DataLoader for training."""
+        if self.use_ffcv:
+            return Loader(
+                fname=self.train_dataset_path,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                order=OrderOption.QUASI_RANDOM
+                if not self.distributed
+                else OrderOption.RANDOM,
+                seed=666,
+                distributed=self.distributed,
+                batches_ahead=self.batches_ahead,
+                pipelines=self.train_pipeline,
+            )
+
         if self.num_workers > 0:
             return DataLoader(
                 self.train_dataset,
@@ -187,6 +250,18 @@ class BigEarthNetDataModule(pl.LightningDataModule):
 
     def val_dataloader(self) -> DataLoader[Any]:
         """Return a DataLoader for validation."""
+        if self.use_ffcv:
+            return Loader(
+                fname=self.val_dataset_path,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                order=OrderOption.SEQUENTIAL,
+                seed=666,
+                distributed=self.distributed,
+                batches_ahead=self.batches_ahead,
+                pipelines=self.val_pipeline,
+            )
+
         if self.num_workers > 0:
             return DataLoader(
                 self.val_dataset,
@@ -209,6 +284,19 @@ class BigEarthNetDataModule(pl.LightningDataModule):
 
     def test_dataloader(self) -> DataLoader[Any]:
         """Return a DataLoader for testing."""
+        if self.use_ffcv:
+            return Loader(
+                fname=self.test_dataset_path,
+                batch_size=self.batch_size,
+                num_workers=self.num_workers,
+                order=OrderOption.SEQUENTIAL,
+                seed=666,
+                distributed=self.distributed,
+                pipelines=self.test_pipeline,
+                batches_ahead=self.batches_ahead,
+                drop_last=False,
+            )
+
         if self.num_workers > 0:
             return DataLoader(
                 self.test_dataset,

@@ -261,7 +261,7 @@ class MAETask(LightningModule):
     def shared_step(self, stage: str, *args: Any, **kwargs: Any) -> dict[str, Tensor]:
         """TODO: Docstring."""
         batch = args[0]
-        item = batch["image"][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        item = batch[0][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]  # batch["image"]
         _, self.C, *_ = item.shape
 
         with torch.no_grad():
