@@ -209,7 +209,7 @@ class MAETask(LightningModule):
         )
         lr = self.hyperparams.get("lr", 1e-3)
         actual_lr = lr * self.batch_size / 256
-        lr_min = self.hyperparams.get("min_lr", 1e-6)
+        lr_min = self.hyperparams.get("lr_min", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
         betas = self.hyperparams.get("betas", (0.9, 0.95))

@@ -55,7 +55,7 @@ experiment:
         num_keep: 196 # 100
         probability: 1.0
     lr: 1.25e-4
-    lr_min: 1.25e-6
+    lr_min: 0.0
     warmup_lr_init: 1.25e-7
     num_warmup: 40
   datamodule:
