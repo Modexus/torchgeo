@@ -276,7 +276,11 @@ def main(conf: DictConfig) -> None:
     callbacks: List[Callback] = []
     if conf.program.overwrite:
         checkpoint_callback = ModelCheckpoint(
-            dirpath=run_dir, save_last=True, save_top_k=0
+            dirpath=run_dir,
+            save_last=True,
+            save_top_k=-1,
+            every_n_epochs=10,
+            monitor="train_loss",
         )
         callbacks.append(checkpoint_callback)
 

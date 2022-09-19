@@ -222,17 +222,20 @@ class MAETask(LightningModule):
             betas=betas,
         )
 
+        # Somehow this is infinity at start
+        # num_steps_per_epoch = self.trainer.num_training_batches // self.trainer.accumulate_grad_batches
+
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": CosineLRScheduler(
                     optimizer=optimizer,
-                    t_initial=self.trainer.max_epochs * 263,
+                    t_initial=self.trainer.max_epochs * 65,  # 256 / 4 bc of acc grad
                     lr_min=lr_min,
                     cycle_mul=1.0,
                     cycle_decay=weight_decay,
                     cycle_limit=1,
-                    warmup_t=num_warmup * 263,
+                    warmup_t=num_warmup * 65,
                     warmup_lr_init=warmup_lr_init,
                 ),
                 "interval": "step",
