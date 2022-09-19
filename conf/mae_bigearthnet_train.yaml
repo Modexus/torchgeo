@@ -4,8 +4,9 @@ trainer:
   precision: "bf16"
   accumulate_grad_batches: 4
   max_epochs: 800
-  limit_train_batches: 1.0
-  limit_val_batches: 0
+  # limit_train_batches: 1.0
+  # log_every_n_steps: 1
+  limit_val_batches: 0 # Turn of validation
   benchmark: True
   fast_dev_run: False
 experiment:
@@ -34,7 +35,8 @@ experiment:
     norm_pix_loss: False
     num_in_channels: 12
     num_out_channels: 12
-    use_checkpoint: False
+    num_checkpoints_encoder: 0
+    num_checkpoints_decoder: 0
     mlp_ratio: 4.0
     embed_dim: 1024
     depth: 24
@@ -55,6 +57,7 @@ experiment:
     lr: 1.25e-4
     lr_min: 1.25e-6
     warmup_lr_init: 1.25e-7
+    num_warmup: 40
   datamodule:
     #root_dir: "/scratch/users/mike/data/BigEarthNetStacked"
     root_dir: "/scratch/users/mike/data/FFCV"
@@ -68,7 +71,7 @@ experiment:
     load_target: False
     use_ffcv: True
     distributed: True
-    batches_ahead: 10
+    batches_ahead: 5
 logger:
   name: "wandb"
   offline: False

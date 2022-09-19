@@ -7,6 +7,7 @@ from timm.models.layers import Mlp
 from timm.models.vision_transformer import Block
 from torch import Tensor
 from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential
+import deepspeed
 
 from .utils import (
     get_channel_encodings,
@@ -29,11 +30,11 @@ class TransformerEncoder(Module):
         depth: int = 12,
         num_heads: int = 12,
         mlp_ratio: float = 4.0,
-        use_checkpoint: bool = False,
+        num_checkpoints: int = 12,
     ) -> None:
         """Initialize a TransformerEncoder."""
         super().__init__()
-        self.use_checkpoint = use_checkpoint
+        self.num_checkpoints = num_checkpoints
 
         self.blocks = Sequential(
             *(
@@ -49,7 +50,16 @@ class TransformerEncoder(Module):
 
     def forward(self, x: Tensor) -> Tensor:
         """Forward pass."""
-        return cast(Tensor, self.blocks(x))
+        if self.num_checkpoints == 0:
+            return cast(Tensor, self.blocks(x))
+
+        for i, block in enumerate(self.blocks):
+            if i > self.num_checkpoints:
+                x = block(x)
+            else:
+                x = deepspeed.checkpointing.checkpoint(block, x)
+
+        return x
 
 
 class EncoderEmbedding(Module):
@@ -111,7 +121,7 @@ class MaskedEncoderViT(Module):
         in_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        num_checkpoints: int = 0,
         embed_dim: int = 768,
         depth: int = 12,
         num_heads: int = 12,
@@ -140,7 +150,7 @@ class MaskedEncoderViT(Module):
         self.num_patches = self.embed_module.num_patches
 
         self.encoder = TransformerEncoder(
-            embed_dim, depth, num_heads, mlp_ratio, use_checkpoint
+            embed_dim, depth, num_heads, mlp_ratio, num_checkpoints
         )
         self.norm = LayerNorm(embed_dim)
 
@@ -237,7 +247,7 @@ class MaskedDecoderViT(Module):
         out_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        num_checkpoints: int = 0,
         depth: int = 2,
         num_heads: int = 1,
         mlp_ratio: float = 4.0,
@@ -264,7 +274,7 @@ class MaskedDecoderViT(Module):
 
         if self.mask_tokens_decoder:
             self.encoder = TransformerEncoder(
-                decoder_embed_dim, depth, num_heads, mlp_ratio, use_checkpoint
+                decoder_embed_dim, depth, num_heads, mlp_ratio, num_checkpoints
             )
 
         self.apply(init_weights)
@@ -333,7 +343,8 @@ class MaskedAutoencoderViT(Module):
         image_size: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        use_checkpoint: bool = False,
+        num_checkpoints_encoder: bool = False,
+        num_checkpoints_decoder: bool = False,
         embed_dim: int = 1024,
         depth: int = 24,
         num_heads: int = 16,
@@ -354,7 +365,7 @@ class MaskedAutoencoderViT(Module):
             in_channels=IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
-            use_checkpoint=use_checkpoint,
+            num_checkpoints=num_checkpoints_encoder,
             embed_dim=embed_dim,
             depth=depth,
             num_heads=num_heads,
@@ -371,7 +382,7 @@ class MaskedAutoencoderViT(Module):
             out_channels=IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
-            use_checkpoint=use_checkpoint,
+            num_checkpoints=num_checkpoints_decoder,
             depth=decoder_depth,
             num_heads=decoder_num_heads,
             mlp_ratio=mlp_ratio,

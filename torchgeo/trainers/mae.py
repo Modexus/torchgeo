@@ -127,34 +127,11 @@ class MAETask(LightningModule):
         )
         self.num_in_channels = self.hyperparams.get("num_in_channels", 3)
         self.num_out_channels = self.hyperparams.get("num_out_channels", 3)
-        self.B = self.hyperparams.get("batch_size", 64)
+        self.batch_size = self.hyperparams.get("batch_size", 64)
         self.num_patches = (self.crop_size // self.patch_size) ** 2
         self.norm_pix_loss = self.hyperparams.get("norm_pix_loss", False)
-        self.use_checkpoint = self.hyperparams.get("use_checkpoint", False)
-
-        self.model = MaskedAutoencoderViT(
-            sensor=self.hyperparams["sensor"],
-            bands=self.hyperparams.get("bands", "all"),
-            image_size=self.crop_size,
-            patch_size=self.patch_size,
-            channel_wise=self.channel_wise,
-            use_checkpoint=self.use_checkpoint,
-            embed_dim=self.embed_dim,
-            depth=self.hyperparams.get("depth", 24),
-            num_heads=self.hyperparams.get("num_heads", 16),
-            mlp_ratio=self.hyperparams.get("mlp_ratio", 4.0),
-            decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
-            decoder_depth=self.hyperparams.get("decoder_depth", 2),
-            decoder_num_heads=self.hyperparams.get("decoder_num_heads", 1),
-            mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
-            mask_tokens_decoder=self.hyperparams.get("mask_tokens_decoder", False),
-            mask_tokens_reduction_encoder=self.hyperparams.get(
-                "mask_tokens_reduction_encoder", False
-            ),
-            mask_tokens_reduction_decoder=self.hyperparams.get(
-                "mask_tokens_reduction_decoder", False
-            ),
-        )
+        self.num_checkpoints_encoder = self.hyperparams.get("use_checkpoint_encoder", 0)
+        self.num_checkpoints_decoder = self.hyperparams.get("use_checkpoint_decoder", 0)
 
         self.mask_fns = self.hyperparams.get("mask_fns", ["random_masking"])
         self.mask_kwargs = self.hyperparams.get(
@@ -190,6 +167,33 @@ class MAETask(LightningModule):
 
         self.config_task()
 
+    def configure_sharded_model(self):
+        """Configures the model for sharded training."""
+        self.model = MaskedAutoencoderViT(
+            sensor=self.hyperparams["sensor"],
+            bands=self.hyperparams.get("bands", "all"),
+            image_size=self.crop_size,
+            patch_size=self.patch_size,
+            channel_wise=self.channel_wise,
+            num_checkpoints_encoder=self.num_checkpoints_encoder,
+            num_checkpoints_decoder=self.num_checkpoints_decoder,
+            embed_dim=self.embed_dim,
+            depth=self.hyperparams.get("depth", 24),
+            num_heads=self.hyperparams.get("num_heads", 16),
+            mlp_ratio=self.hyperparams.get("mlp_ratio", 4.0),
+            decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
+            decoder_depth=self.hyperparams.get("decoder_depth", 2),
+            decoder_num_heads=self.hyperparams.get("decoder_num_heads", 1),
+            mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
+            mask_tokens_decoder=self.hyperparams.get("mask_tokens_decoder", False),
+            mask_tokens_reduction_encoder=self.hyperparams.get(
+                "mask_tokens_reduction_encoder", False
+            ),
+            mask_tokens_reduction_decoder=self.hyperparams.get(
+                "mask_tokens_reduction_decoder", False
+            ),
+        )
+
     def configure_optimizers(self) -> dict[str, Any]:
         """Initialize the optimizer and learning rate scheduler.
 
@@ -201,15 +205,16 @@ class MAETask(LightningModule):
             return {}
 
         optimizer_class = (
-            FusedAdam  # get_attr(optim, self.hyperparams.get("optimizer", "AdamW"))
+            FusedAdam  # getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
         )
         lr = self.hyperparams.get("lr", 1e-3)
-        actual_lr = lr * self.B / 256
+        actual_lr = lr * self.batch_size / 256
         lr_min = self.hyperparams.get("min_lr", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
-        num_warmup = self.hyperparams.get("num_warmup", 5)
         betas = self.hyperparams.get("betas", (0.9, 0.95))
+        num_warmup = self.hyperparams.get("num_warmup", 5)
+
         optimizer = optimizer_class(
             self.trainer.model.parameters(),
             lr=actual_lr,
@@ -222,18 +227,16 @@ class MAETask(LightningModule):
             "lr_scheduler": {
                 "scheduler": CosineLRScheduler(
                     optimizer=optimizer,
-                    t_initial=self.trainer.max_epochs
-                    * self.trainer.limit_train_batches,
+                    t_initial=self.trainer.max_epochs * 263,
                     lr_min=lr_min,
                     cycle_mul=1.0,
                     cycle_decay=weight_decay,
                     cycle_limit=1,
-                    warmup_t=num_warmup * self.trainer.limit_train_batches,
+                    warmup_t=num_warmup * 263,
                     warmup_lr_init=warmup_lr_init,
                 ),
                 "interval": "step",
                 "frequency": 1,
-                "monitor": "val_loss",
             },
         }
 
@@ -282,7 +285,7 @@ class MAETask(LightningModule):
             item["loss"],
             on_step=stage == "train",
             on_epoch=stage != "train",
-            batch_size=self.B,
+            batch_size=self.batch_size,
             sync_dist=stage != "train",
         )
 
@@ -394,16 +397,20 @@ class MAETask(LightningModule):
         )
 
         if self.channel_wise:
-            pred = pred.view(self.B * self.num_out_channels, self.num_patches, -1)
+            pred = pred.view(
+                self.batch_size * self.num_out_channels, self.num_patches, -1
+            )
 
         input_patch = patchify(input, self.patch_size).view(
-            self.B, self.num_in_channels * self.num_patches, -1
+            self.batch_size, self.num_in_channels * self.num_patches, -1
         )
         input_patch = input_patch[:, ~mask_input]
         *_, H = input_patch.shape
 
         masked_input = torch.zeros(
-            (self.B, self.num_patches, H), device=input.device, dtype=input_patch.dtype
+            (self.batch_size, self.num_patches, H),
+            device=input.device,
+            dtype=input_patch.dtype,
         )
         masked_input = reduce_mask_token(
             input_patch, mask_input, masked_input, self.num_patches
@@ -413,12 +420,16 @@ class MAETask(LightningModule):
         masked_input = unpatchify(masked_input, self.patch_size).repeat(1, 3, 1, 1)
 
         if self.channel_wise:
-            target = target.view(self.B, -1, self.crop_size, self.crop_size)[:, :3]
-            input = input.view(self.B, -1, self.crop_size, self.crop_size)[:, :3]
+            target = target.view(self.batch_size, -1, self.crop_size, self.crop_size)[
+                :, :3
+            ]
+            input = input.view(self.batch_size, -1, self.crop_size, self.crop_size)[
+                :, :3
+            ]
             masked_input = masked_input.view(
-                self.B, -1, self.crop_size, self.crop_size
+                self.batch_size, -1, self.crop_size, self.crop_size
             )[:, :3]
-            pred = pred.view(self.B, -1, self.crop_size, self.crop_size)[:, :3]
+            pred = pred.view(self.batch_size, -1, self.crop_size, self.crop_size)[:, :3]
 
         images = pad_imgs_dims([input, masked_input, pred, target], 3)
 
