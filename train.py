@@ -301,7 +301,6 @@ def main(conf: DictConfig) -> None:
         **trainer_args,
         strategy=DeepSpeedStrategy(
             stage=1,
-            cpu_checkpointing=False,
             allgather_bucket_size=5e8,
             reduce_bucket_size=5e8,
             logging_batch_size_per_gpu=task_args["batch_size"],

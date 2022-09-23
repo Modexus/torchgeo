@@ -54,7 +54,7 @@ class TransformerEncoder(Module):
             return cast(Tensor, self.blocks(x))
 
         for i, block in enumerate(self.blocks):
-            if i > self.num_checkpoints:
+            if i >= self.num_checkpoints:
                 x = block(x)
             else:
                 x = deepspeed.checkpointing.checkpoint(block, x)

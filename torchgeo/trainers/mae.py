@@ -83,7 +83,7 @@ class Augmentations(Module):
                 K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.2, 1.0),
+                    scale=(0.6, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),
@@ -204,9 +204,9 @@ class MAETask(LightningModule):
         if self.trainer is None:
             return {}
 
-        optimizer_class = (
-            FusedAdam  # getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
-        )
+        optimizer_class = getattr(
+            optim, self.hyperparams.get("optimizer", "AdamW")
+        )  # FusedAdam
         lr = self.hyperparams.get("lr", 1e-3)
         actual_lr = lr * self.batch_size / 256
         lr_min = self.hyperparams.get("lr_min", 1e-6)
@@ -267,7 +267,8 @@ class MAETask(LightningModule):
     def shared_step(self, stage: str, *args: Any, **kwargs: Any) -> dict[str, Tensor]:
         """TODO: Docstring."""
         batch = args[0]
-        item = batch[0][:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]  # batch["image"]
+        item = batch["image"] if isinstance(batch, dict) else batch[0]
+        item = item[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
         _, self.C, *_ = item.shape
 
         with torch.no_grad():
