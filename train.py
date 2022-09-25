@@ -89,9 +89,10 @@ TASK_TO_MODULES_MAPPING: Dict[
     "cae_naipcdl_train": (CAETask, NAIPCDLDataModule),
     "cae_naipcdl_evaluate": (EmbeddingEvaluator, NAIPCDLDataModule),
     "mae_bigearthnet_train": (MAETask, BigEarthNetDataModule),
-    "mae_bigearthnet_evaluate": (EmbeddingEvaluator, BigEarthNetDataModule),
     "cae_bigearthnet_train": (CAETask, BigEarthNetDataModule),
     "cae_bigearthnet_evaluate": (EmbeddingEvaluator, BigEarthNetDataModule),
+    "mae_bigearthnet_finetuning": (EmbeddingEvaluator, BigEarthNetDataModule),
+    "mae_bigearthnet_linearprobing": (EmbeddingEvaluator, BigEarthNetDataModule),
 }
 
 
