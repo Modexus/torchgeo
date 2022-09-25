@@ -208,7 +208,12 @@ class MAETask(LightningModule):
             FusedAdam  # getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
         )
         lr = self.hyperparams.get("lr", 1e-3)
-        actual_lr = lr * (self.batch_size * 4 * 4) / 256
+        effective_batch_size = (
+            self.batch_size
+            * self.trainer.accumulate_grad_batches
+            * self.trainer.num_devices
+        )
+        actual_lr = lr * effective_batch_size / 256
         lr_min = self.hyperparams.get("lr_min", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
@@ -221,6 +226,15 @@ class MAETask(LightningModule):
             weight_decay=weight_decay,
             betas=betas,
         )
+        scheduler = CosineLRScheduler(
+            optimizer=optimizer,
+            t_initial=self.trainer.max_epochs * 65,  # 263 // 4 = 65 bc of acc grad
+            lr_min=lr_min,
+            cycle_mul=1.0,
+            cycle_limit=1,
+            warmup_t=num_warmup * 65,
+            warmup_lr_init=warmup_lr_init,
+        )
 
         # Somehow this is infinity at start
         # num_steps_per_epoch = self.trainer.num_training_batches // self.trainer.accumulate_grad_batches
@@ -228,16 +242,7 @@ class MAETask(LightningModule):
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
-                "scheduler": CosineLRScheduler(
-                    optimizer=optimizer,
-                    t_initial=self.trainer.max_epochs
-                    * 65,  # 263 // 4 = 65 bc of acc grad
-                    lr_min=lr_min,
-                    cycle_mul=1.0,
-                    cycle_limit=1,
-                    warmup_t=num_warmup * 65,
-                    warmup_lr_init=warmup_lr_init,
-                ),
+                "scheduler": scheduler,
                 "interval": "step",
                 "frequency": 1,
             },

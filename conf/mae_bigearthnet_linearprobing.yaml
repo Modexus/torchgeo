@@ -1,0 +1,55 @@
+trainer:
+  gpus: [0,1,2,3]
+  max_epochs: 100
+  precision: "bf16"
+  benchmark: True
+experiment:
+  task: "mae_bigearthnet_linearprobing"
+  name: "mae_bigearthnet_linearprobing"
+  run:
+    fit: True
+    test: True
+  module:
+    task_name: "mae"
+    model: "mae"
+    encoder_name: "vit"
+    sensor: "naip"
+    bands: "all"
+    linear_probing: True
+    image_size: 120
+    crop_size: 96
+    patch_size: 8
+    batch_size: ${experiment.datamodule.batch_size}
+    mean_patches: True
+    channel_wise: True
+    multi_label: True
+    in_channels: 14
+    out_channels: 1
+    num_classes: 19
+    load_checkpoint: "last.ckpt"
+    imagenet_pretrained: False
+    lr: 1e-1
+    optimizer_kwargs:
+      weight_decay: 0.0
+      momentum: 0.9
+    lr_min: 0.0
+    warmup_lr_init: 1.5e-7
+    num_warmup: 10
+  datamodule:
+    #root_dir: "/data/users/mike/data/BigEarthNetFixed"
+    root_dir: "/scratch/users/mike/data/FFCV"
+    bands: "all"
+    num_classes: 19
+    batch_size: 32
+    num_workers: 8
+    pin_memory: True
+    prefetch_factor: 5
+    persistent_workers: True
+    load_target: True
+    use_ffcv: True
+    distributed: True
+    batches_ahead: 4
+logger:
+  name: "wandb"
+  offline: False
+  project_name: "master-thesis"

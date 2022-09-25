@@ -1,13 +1,13 @@
 trainer:
-  gpus: [1]
-  max_epochs: 100
+  gpus: [0,1,2,3]
+  max_epochs: 30
   precision: 32
   benchmark: True
   limit_train_batches: 360
   limit_val_batches: 40 
 experiment:
-  task: "mae_bigearthnet_evaluate"
-  name: "mae_bigearthnet_evaluate"
+  task: "mae_bigearthnet_finetuning"
+  name: "mae_bigearthnet_finetuning"
   run:
     fit: True
     test: True
@@ -29,12 +29,19 @@ experiment:
     num_classes: 19
     load_checkpoint: "last.ckpt"
     imagenet_pretrained: False
-    lr: 0.02
-    momentum: 0.9
-    weight_decay: 0.000001
-    learning_rate_schedule_patience: 6
+    optimizer: "ADAMW"
+    lr: 1e-3
+    optimizer_kwargs:
+      weight_decay: 0.05
+      betas: 
+        - 0.9
+        - 0.999
+    lr_min: 0.0
+    warmup_lr_init: 1.5e-7
+    num_warmup: 5
   datamodule:
-    root_dir: "/data/users/mike/data/BigEarthNetFixed"
+    #root_dir: "/data/users/mike/data/BigEarthNetFixed"
+    root_dir: "/scratch/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
     batch_size: 32
@@ -43,6 +50,9 @@ experiment:
     prefetch_factor: 5
     persistent_workers: True
     load_target: True
+    use_ffcv: True
+    distributed: True
+    batches_ahead: 4
 logger:
   name: "wandb"
   offline: False

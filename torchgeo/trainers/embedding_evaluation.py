@@ -15,7 +15,6 @@ from torch.nn import (
     Module,
     Sequential,
 )
-from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchmetrics import (
     Accuracy,
     AveragePrecision,
@@ -23,7 +22,9 @@ from torchmetrics import (
     JaccardIndex,
     MetricCollection,
 )
-
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
+from timm.scheduler import CosineLRScheduler
+from deepspeed.ops.adam import FusedAdam
 from ..utils import _to_tuple
 from .byol import BYOLTask
 from .cae import CAETask
@@ -32,6 +33,9 @@ from .msae import MSAETask
 from .msn import MSNTask
 from .tile2vec import Tile2VecTask
 from .vicreg import VICRegTask
+
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 
 class Augmentations(Module):
@@ -92,131 +96,16 @@ class EmbeddingEvaluator(LightningModule):
         self.out_channels = self.hyperparams.get("out_channels", self.in_channels)
         self.mean_patches = self.hyperparams.get("mean_patches", False)
         self.patch_size = self.hyperparams.get("patch_size", 16)
-        self.B = self.hyperparams.get("batch_size", 256)
+        self.batch_size = self.hyperparams.get("batch_size", 256)
+        self.linear_probing = self.hyperparams.get("linear_probing", False)
         self.multi_label = self.hyperparams.get("multi_label", False)
 
         image_size = _to_tuple(self.hyperparams["image_size"])
-        crop_size = _to_tuple(self.hyperparams.get("crop_size", image_size))
-        num_classes = self.hyperparams["num_classes"]
+        self.crop_size = _to_tuple(self.hyperparams.get("crop_size", image_size))
+        self.num_classes = self.hyperparams["num_classes"]
 
-        self.num_patches = (crop_size[0] // self.patch_size) * (
-            crop_size[1] // self.patch_size
-        )
-
-        self.projector: Module | None = None
-        if self.hyperparams["task_name"] == "tile2vec":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = Tile2VecTask.load_from_checkpoint(
-                    checkpoint_path=self.hyperparams["checkpoint_path"]
-                )
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = Tile2VecTask(**self.hyperparams)
-            task.freeze()
-            if "resnet" in self.hyperparams["encoder_name"]:
-                self.encoder = task.model.encoder
-            else:
-                self.encoder = task.model
-        elif self.hyperparams["task_name"] == "byol":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = BYOLTask.load_from_checkpoint(
-                    self.hyperparams["checkpoint_path"]
-                )
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = BYOLTask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model.encoder.model
-        elif self.hyperparams["task_name"] == "vicreg":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = VICRegTask.load_from_checkpoint(
-                    self.hyperparams["checkpoint_path"]
-                )
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = VICRegTask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model.encoder
-        elif self.hyperparams["task_name"] == "mae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = MAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = MAETask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model.encoder
-        elif self.hyperparams["task_name"] == "cae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = CAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = CAETask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model.encoder
-
-        elif self.hyperparams["task_name"] == "msn":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = MSNTask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = MSNTask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model
-        elif self.hyperparams["task_name"] == "msae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
-                task = MSAETask.load_from_checkpoint(
-                    self.hyperparams["checkpoint_path"]
-                )
-                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
-            else:
-                task = MSAETask(**self.hyperparams)
-            task.freeze()
-            self.encoder = task.model.encoder
-        elif self.hyperparams["task_name"] == "identity":
-            self.encoder = Identity()  # type: ignore[no-untyped-call]
-        else:
-            raise ValueError(
-                f"Task type '{self.hyperparams['task_name']}' is not valid."
-            )
-
-        output = self.get_latent(
-            torch.zeros((2, self.in_channels, crop_size[0], crop_size[1]))
-        )
-        if isinstance(output, Sequence):
-            output = output[0]
-        output = output.reshape(2, -1)
-        if self.projector is not None:
-            output = self.projector(output)
-        out_dim = output.shape[1]
-
-        if self.mean_patches:
-            out_dim = output.view(2, self.num_patches * self.out_channels, -1).shape[-1]
-
-        self.classifier = Linear(
-            out_dim
-            if not self.channel_wise or not self.mean_patches
-            else out_dim * self.out_channels,
-            num_classes,
-        )
-        self.classifier.weight.data.normal_(mean=0.0, std=0.01)
-        self.classifier.bias.data.zero_()
-
-        self.classifier_loss = (
-            CrossEntropyLoss() if not self.multi_label else BCEWithLogitsLoss()
+        self.num_patches = (self.crop_size[0] // self.patch_size) * (
+            self.crop_size[1] // self.patch_size
         )
 
         self.train_metrics = MetricCollection(
@@ -270,8 +159,137 @@ class EmbeddingEvaluator(LightningModule):
         }
 
         self.augment = self.hyperparams.get(
-            "augment_fn", Augmentations(image_size, crop_size)
+            "augment_fn", Augmentations(image_size, self.crop_size)
         )
+
+    def create_model(self):
+        """Creates the model."""
+        self.projector: Module | None = None
+        if self.hyperparams["task_name"] == "tile2vec":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = Tile2VecTask.load_from_checkpoint(
+                    checkpoint_path=self.hyperparams["checkpoint_path"]
+                )
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = Tile2VecTask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            if "resnet" in self.hyperparams["encoder_name"]:
+                self.encoder = task.model.encoder
+            else:
+                self.encoder = task.model
+        elif self.hyperparams["task_name"] == "byol":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = BYOLTask.load_from_checkpoint(
+                    self.hyperparams["checkpoint_path"]
+                )
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = BYOLTask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model.encoder.model
+        elif self.hyperparams["task_name"] == "vicreg":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = VICRegTask.load_from_checkpoint(
+                    self.hyperparams["checkpoint_path"]
+                )
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = VICRegTask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model.encoder
+        elif self.hyperparams["task_name"] == "mae":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = MAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = MAETask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model.encoder
+        elif self.hyperparams["task_name"] == "cae":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = CAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = CAETask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model.encoder
+
+        elif self.hyperparams["task_name"] == "msn":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = MSNTask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = MSNTask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model
+        elif self.hyperparams["task_name"] == "msae":
+            if "checkpoint_path" in self.hyperparams and isfile(
+                self.hyperparams["checkpoint_path"]
+            ):
+                task = MSAETask.load_from_checkpoint(
+                    self.hyperparams["checkpoint_path"]
+                )
+                print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
+            else:
+                task = MSAETask(**self.hyperparams)
+            if self.linear_probing:
+                task.freeze()
+            self.encoder = task.model.encoder
+        elif self.hyperparams["task_name"] == "identity":
+            self.encoder = Identity()  # type: ignore[no-untyped-call]
+        else:
+            raise ValueError(
+                f"Task type '{self.hyperparams['task_name']}' is not valid."
+            )
+
+        output = self.get_latent(
+            torch.zeros((2, self.in_channels, self.crop_size[0], self.crop_size[1]))
+        )
+        if isinstance(output, Sequence):
+            output = output[0]
+        output = output.reshape(2, -1)
+        if self.projector is not None:
+            output = self.projector(output)
+        out_dim = output.shape[1]
+
+        if self.mean_patches:
+            out_dim = output.view(2, self.num_patches * self.out_channels, -1).shape[-1]
+
+        self.classifier = Linear(
+            out_dim
+            if not self.channel_wise or not self.mean_patches
+            else out_dim * self.out_channels,
+            self.num_classes,
+        )
+        self.classifier.weight.data.normal_(mean=0.0, std=0.01)
+        self.classifier.bias.data.zero_()
+
+        self.classifier_loss = (
+            CrossEntropyLoss() if not self.multi_label else BCEWithLogitsLoss()
+        )
+
+    def configure_sharded_model(self):
+        """Configures the model for sharded training."""
+        self.create_model()
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a LightningModule for pre-training a model with Tile2Vec.
@@ -304,24 +322,53 @@ class EmbeddingEvaluator(LightningModule):
         if self.trainer is None:
             return {}
 
-        optimizer_class = getattr(optim, self.hyperparams.get("optimizer", "SGD"))
-        lr = self.hyperparams.get("lr", 2e-2)
-        actual_lr = lr * self.B / 256
-        weight_decay = self.hyperparams.get("weight_decay", 1e-6)
-        momentum = self.hyperparams.get("momentum", 0.9)
+        optimizer_name = self.hyperparams.get("optimizer", "SGD")
+        optimizer_class = (
+            getattr(optim, optimizer_name) if optimizer_name != "ADAMW" else FusedAdam
+        )
+        lr = self.hyperparams.get("lr", 1e-3)
+        effective_batch_size = (
+            self.batch_size
+            * self.trainer.accumulate_grad_batches
+            * self.trainer.num_devices
+        )
+        actual_lr = lr * effective_batch_size / 256
+        optimizer_kwargs = self.hyperparams.get("optimizer_kwargs", {})
         optimizer = optimizer_class(
-            self.parameters(),
-            lr=actual_lr,
-            momentum=momentum,
-            weight_decay=weight_decay,
+            self.trainer.model.parameters(), lr=actual_lr, **optimizer_kwargs
         )
 
-        scheduler = CosineAnnealingLR(optimizer, T_max=self.trainer.max_epochs)
+        lr_min = self.hyperparams.get("lr_min", 1e-6)
+        warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1.5e-7)
+        num_warmup = self.hyperparams.get("num_warmup", 10)
+        scheduler = CosineLRScheduler(
+            optimizer=optimizer,
+            t_initial=self.trainer.max_epochs * 65,  # 263 // 4 = 65 bc of acc grad
+            lr_min=lr_min,
+            cycle_mul=1.0,
+            cycle_limit=1,
+            warmup_t=num_warmup * 65,
+            warmup_lr_init=warmup_lr_init,
+        )
 
         return {
             "optimizer": optimizer,
-            "lr_scheduler": {"scheduler": scheduler, "monitor": "train_loss"},
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "step",
+                "frequency": 1,
+            },
         }
+
+    # Fix for timm scheduler: https://github.com/Lightning-AI/lightning/issues/5555
+    def lr_scheduler_step(
+        self, scheduler: LRSchedulerTypeUnion, optimizer_idx: int, metric: Any | None
+    ) -> None:
+        """Step the learning rate scheduler."""
+        if metric is None:
+            scheduler.step(epoch=self.global_step)
+        else:
+            scheduler.step(metric, epoch=self.global_step)
 
     def get_latent(self, x: Tensor) -> Tensor:
         """TODO: Docstring."""
@@ -366,7 +413,6 @@ class EmbeddingEvaluator(LightningModule):
 
         latent = latent.mean(dim=1)
         y_hat = self.classifier(latent)
-        # y_hat = y_hat.mean(dim=1)
 
         return cast(Tensor, y_hat)
 
@@ -375,11 +421,13 @@ class EmbeddingEvaluator(LightningModule):
     ) -> dict[str, Tensor]:
         """Perform a step of the model."""
         batch = args[0]
-        x = batch["image"]
-        y = batch["label"].squeeze()
+        x = batch["image"] if isinstance(batch, dict) else batch[0]
+        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        y = batch["label"] if isinstance(batch, dict) else batch[1]
+        y = y.squeeze()
 
         with torch.no_grad():
-            aug = self.augment(x, "train")
+            aug = self.augment(x, stage)
             latent = self.get_latent(aug)
 
         loss = self.evaluate_classification(latent, y, stage)
@@ -425,9 +473,16 @@ class EmbeddingEvaluator(LightningModule):
             loss,
             on_step=stage == "train",
             on_epoch=True,
-            batch_size=self.B,
+            batch_size=self.batch_size,
+            sync_dist=True,
         )
-        self.log_dict(metrics, on_step=stage != "val", on_epoch=True, batch_size=self.B)
+        self.log_dict(
+            metrics,
+            on_step=stage != "val",
+            on_epoch=True,
+            batch_size=self.batch_size,
+            sync_dist=True,
+        )
 
         return cast(Tensor, loss)
 
