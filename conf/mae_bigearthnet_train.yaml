@@ -6,8 +6,10 @@ trainer:
   max_epochs: 800
   # limit_train_batches: 1.0
   # log_every_n_steps: 1
-  limit_val_batches: 0 # Turn of validation
+  limit_val_batches: 0.125
+  check_val_every_n_epoch: 10
   benchmark: True
+  enable_progress_bar: True
   fast_dev_run: False
 experiment:
   task: "mae_bigearthnet_train"
@@ -21,9 +23,9 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
-    # resume_checkpoint: "last.ckpt"
+    resume_checkpoint: "epoch=639-step=41600.ckpt"
     image_size: 120
-    crop_size: 112
+    crop_size: 96
     patch_size: 8
     batch_size: ${experiment.datamodule.batch_size} 
     channel_wise: True
@@ -52,11 +54,11 @@ experiment:
         ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 196 # 100
+        num_keep: 225 # 100
         probability: 1.0
-    lr: 1.25e-4
+    lr: 1.5e-4
     lr_min: 0.0
-    warmup_lr_init: 1.25e-7
+    warmup_lr_init: 1.5e-7
     num_warmup: 40
   datamodule:
     #root_dir: "/scratch/users/mike/data/BigEarthNetStacked"
@@ -67,11 +69,11 @@ experiment:
     num_workers: 7
     pin_memory: True
     prefetch_factor: 2
-    persistent_workers: True
+    persistent_workers: False
     load_target: False
     use_ffcv: True
     distributed: True
-    batches_ahead: 5
+    batches_ahead: 4
 logger:
   name: "wandb"
   offline: False

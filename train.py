@@ -19,8 +19,7 @@ from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
 )
-from pytorch_lightning.strategies import DeepSpeedStrategy
-from pytorch_lightning.strategies.fully_sharded import DDPFullyShardedStrategy
+from pytorch_lightning.strategies import DeepSpeedStrategy, DDPStrategy
 
 import wandb
 from torchgeo.datamodules import (
@@ -222,7 +221,7 @@ def main(conf: DictConfig) -> None:
 
     try:
         if len(ckpt_name := conf.experiment.module.load_checkpoint) > 0:
-            experiment_train_dir = experiment_dir.replace("evaluate", "train")
+            experiment_train_dir = "_".join(experiment_dir.split("_")[:-1] + ["train"])
             task_args["checkpoint_path"] = os.path.join(
                 experiment_train_dir, run_name, ckpt_name
             )
@@ -280,7 +279,7 @@ def main(conf: DictConfig) -> None:
             save_last=True,
             save_top_k=-1,
             every_n_epochs=10,
-            monitor="train_loss",
+            save_on_train_epoch_end=True,
         )
         callbacks.append(checkpoint_callback)
 
@@ -303,6 +302,7 @@ def main(conf: DictConfig) -> None:
             stage=1,
             allgather_bucket_size=5e8,
             reduce_bucket_size=5e8,
+            load_full_weights=False,
             logging_batch_size_per_gpu=task_args["batch_size"],
         ),
     )
@@ -314,8 +314,8 @@ def main(conf: DictConfig) -> None:
     # Run experiment
     ######################################
     try:
-        if len(ckpt_name := conf.experiment.module.resume_checkpoint) > 0:
-            ckpt_path = os.path.join(experiment_dir, run_name, ckpt_name)
+        ckpt_name = conf.experiment.module.resume_checkpoint
+        ckpt_path = os.path.join(experiment_dir, run_name, ckpt_name)
     except ConfigAttributeError:
         ckpt_path = None
 

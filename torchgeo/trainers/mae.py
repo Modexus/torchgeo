@@ -204,11 +204,11 @@ class MAETask(LightningModule):
         if self.trainer is None:
             return {}
 
-        optimizer_class = getattr(
-            optim, self.hyperparams.get("optimizer", "AdamW")
-        )  # FusedAdam
+        optimizer_class = (
+            FusedAdam  # getattr(optim, self.hyperparams.get("optimizer", "AdamW"))
+        )
         lr = self.hyperparams.get("lr", 1e-3)
-        actual_lr = lr * self.batch_size / 256
+        actual_lr = lr * (self.batch_size * 4 * 4) / 256
         lr_min = self.hyperparams.get("lr_min", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1e-7)
         weight_decay = self.hyperparams.get("weight_decay", 0.05)
@@ -230,10 +230,10 @@ class MAETask(LightningModule):
             "lr_scheduler": {
                 "scheduler": CosineLRScheduler(
                     optimizer=optimizer,
-                    t_initial=self.trainer.max_epochs * 65,  # 256 / 4 bc of acc grad
+                    t_initial=self.trainer.max_epochs
+                    * 65,  # 263 // 4 = 65 bc of acc grad
                     lr_min=lr_min,
                     cycle_mul=1.0,
-                    cycle_decay=weight_decay,
                     cycle_limit=1,
                     warmup_t=num_warmup * 65,
                     warmup_lr_init=warmup_lr_init,
@@ -267,12 +267,12 @@ class MAETask(LightningModule):
     def shared_step(self, stage: str, *args: Any, **kwargs: Any) -> dict[str, Tensor]:
         """TODO: Docstring."""
         batch = args[0]
-        item = batch["image"] if isinstance(batch, dict) else batch[0]
-        item = item[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
-        _, self.C, *_ = item.shape
+        x = batch["image"] if isinstance(batch, dict) else batch[0]
+        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        _, self.C, *_ = x.shape
 
         with torch.no_grad():
-            item = self.get_item(item, stage)
+            item = self.get_item(x, stage)
 
         item = self.forward(item)
 
@@ -288,9 +288,9 @@ class MAETask(LightningModule):
             f"{stage}_loss",
             item["loss"],
             on_step=stage == "train",
-            on_epoch=stage != "train",
+            on_epoch=True,
             batch_size=self.batch_size,
-            sync_dist=stage != "train",
+            sync_dist=True,
         )
 
         if stage == "train":
@@ -298,18 +298,18 @@ class MAETask(LightningModule):
 
         return item
 
-    def get_item(self, target: Tensor, stage: str) -> dict[str, Any]:
+    def get_item(self, input: Tensor, stage: str) -> dict[str, Any]:
         """Preparation of the data for the forward pass."""
-        target = (
-            self.augment(target, stage)
-            if target.dtype != torch.bfloat16
-            else self.augment(target.half(), stage).bfloat16()
+        input = (
+            self.augment(input, stage)
+            if input.dtype != torch.bfloat16
+            else self.augment(input.half(), stage).bfloat16()
         )
         mask_input = generate_mask(
-            self.mask_fns, self.mask_kwargs, self.num_patches, self.C, target.device
+            self.mask_fns, self.mask_kwargs, self.num_patches, self.C, input.device
         )
 
-        input = target.clone()
+        target = input.clone()
         mask_target = mask_input
         encoder_channels = decoder_channels = []
 
@@ -318,13 +318,13 @@ class MAETask(LightningModule):
                 # encoder_channels = torch.randperm(self.C, device=x.device).tolist()[
                 #     : self.num_in_channels
                 # ]
-                encoder_channels = torch.arange(self.C, device=target.device).tolist()[
+                encoder_channels = torch.arange(self.C, device=input.device).tolist()[
                     : self.num_in_channels
                 ]
 
-                decoder_channels = torch.randperm(
-                    self.C, device=target.device
-                ).tolist()[: self.num_out_channels]
+                decoder_channels = torch.randperm(self.C, device=input.device).tolist()[
+                    : self.num_out_channels
+                ]
 
                 input = input[:, encoder_channels]
                 target = target[:, decoder_channels]
@@ -332,7 +332,7 @@ class MAETask(LightningModule):
                 mask_target = mask_target[decoder_channels]
             else:
                 encoder_channels = decoder_channels = torch.arange(
-                    self.C, device=target.device
+                    self.C, device=input.device
                 ).tolist()
 
             input = input.flatten(0, 1).unsqueeze(1)

@@ -269,10 +269,13 @@
             "args": [
                 "config_file=conf/mae_bigearthnet_train.yaml",
                 "program.seed=666",
+                "program.output_dir=/scratch/users/mike/experiments",
+                "experiment.datamodule.naip_root_dir=/scratch/users/mike/data/NAIP",
+                "program.log_dir=/scratch/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
                 "trainer.accelerator=gpu",
-                "trainer.devices=[0]",
+                "trainer.devices=[0,1,2,3]",
             ],
             "justMyCode": false
         },

@@ -220,7 +220,6 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 order=OrderOption.QUASI_RANDOM
                 if not self.distributed
                 else OrderOption.RANDOM,
-                seed=666,
                 distributed=self.distributed,
                 batches_ahead=self.batches_ahead,
                 pipelines=self.train_pipeline,
@@ -256,7 +255,6 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 batch_size=self.batch_size,
                 num_workers=self.num_workers,
                 order=OrderOption.SEQUENTIAL,
-                seed=666,
                 distributed=self.distributed,
                 batches_ahead=self.batches_ahead,
                 pipelines=self.val_pipeline,
@@ -290,7 +288,6 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 batch_size=self.batch_size,
                 num_workers=self.num_workers,
                 order=OrderOption.SEQUENTIAL,
-                seed=666,
                 distributed=self.distributed,
                 pipelines=self.test_pipeline,
                 batches_ahead=self.batches_ahead,
