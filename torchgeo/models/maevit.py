@@ -2,12 +2,12 @@
 
 from typing import cast
 
+import deepspeed
 import torch
 from timm.models.layers import Mlp
 from timm.models.vision_transformer import Block
 from torch import Tensor
 from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential
-import deepspeed
 
 from .utils import (
     get_channel_encodings,
@@ -343,8 +343,8 @@ class MaskedAutoencoderViT(Module):
         image_size: int,
         patch_size: int = 16,
         channel_wise: bool = False,
-        num_checkpoints_encoder: bool = False,
-        num_checkpoints_decoder: bool = False,
+        num_checkpoints_encoder: int = 0,
+        num_checkpoints_decoder: int = 0,
         embed_dim: int = 1024,
         depth: int = 24,
         num_heads: int = 16,

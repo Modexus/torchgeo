@@ -80,7 +80,7 @@ class Augmentations(Module):
 
         self.augmentation = {
             "train": Sequential(
-                K.Resize(size=image_size, align_corners=False),
+                # K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
                     scale=(0.6, 1.0),
@@ -90,8 +90,8 @@ class Augmentations(Module):
                 K.RandomHorizontalFlip(),
             ),
             "val": Sequential(
-                K.Resize(size=image_size, align_corners=False),
-                K.CenterCrop(size=crop_size, align_corners=False, resample="BICUBIC"),
+                # K.Resize(size=image_size, align_corners=False),
+                K.CenterCrop(size=crop_size, align_corners=False, resample="BICUBIC")
             ),
         }
 
@@ -147,6 +147,10 @@ class MAETask(LightningModule):
         crop_size = _to_tuple(self.crop_size)
         self.augment = Augmentations(image_size, crop_size)
 
+        self.create_sharded = self.hyperparams.get("create_sharded", False)
+        if not self.create_sharded:
+            self.create_model()
+
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a LightningModule for pre-training a model with BYOL.
 
@@ -167,8 +171,8 @@ class MAETask(LightningModule):
 
         self.config_task()
 
-    def configure_sharded_model(self):
-        """Configures the model for sharded training."""
+    def create_model(self) -> None:
+        """Creates the model."""
         self.model = MaskedAutoencoderViT(
             sensor=self.hyperparams["sensor"],
             bands=self.hyperparams.get("bands", "all"),
@@ -193,6 +197,11 @@ class MAETask(LightningModule):
                 "mask_tokens_reduction_decoder", False
             ),
         )
+
+    def configure_sharded_model(self) -> None:
+        """Configures the model for sharded training."""
+        if self.create_sharded:
+            self.create_model()
 
     def configure_optimizers(self) -> dict[str, Any]:
         """Initialize the optimizer and learning rate scheduler.

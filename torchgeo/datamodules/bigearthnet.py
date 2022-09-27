@@ -3,18 +3,19 @@
 
 """BigEarthNet datamodule."""
 
+import os
 from typing import Any, Dict, Optional
 
 import matplotlib.pyplot as plt
 import pytorch_lightning as pl
 import torch
+from ffcv.fields.decoders import NDArrayDecoder
+from ffcv.loader import Loader, OrderOption
+from ffcv.transforms import ToTensor
 from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
-import os
+
 from ..datasets import BigEarthNet
-from ffcv.loader import Loader, OrderOption
-from ffcv.fields.decoders import NDArrayDecoder
-from ffcv.transforms import ToTensor
 
 # https://github.com/pytorch/pytorch/issues/60979
 # https://github.com/pytorch/pytorch/pull/61045

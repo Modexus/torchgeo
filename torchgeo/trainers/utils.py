@@ -260,6 +260,35 @@ def random_masking_ratio(mask: Tensor, ratio: float, probability: float) -> Tens
     return mask
 
 
+def random_channel_masking(mask: Tensor, num_keep: int, probability: float) -> Tensor:
+    """Perform per-sample random masking by per-sample shuffling."""
+    if torch.rand(1) > probability:
+        return mask
+
+    C, PS = mask.shape
+    mask = ~mask
+
+    P = len(mask)
+    num_keep_additional = max(0, num_keep - PS)
+
+    channel_each_patch = torch.randint(0, C, (PS,), device=mask.device)
+    patches_num = torch.arange(0, PS, device=mask.device)
+
+    mask[channel_each_patch, patches_num] = False
+    if num_keep_additional:
+        remaining = mask.nonzero()
+        num_remaining, _ = remaining.shape
+
+        remaining_keep = remaining[
+            torch.randperm(num_remaining, device=mask.device)[:num_keep_additional]
+        ].T
+        mask[remaining_keep[0], remaining_keep[1]] = False
+
+    mask = mask.view(C, PS)
+
+    return mask
+
+
 # TODO: Rework
 # def focal_masking(
 #     masks: Tensor,
@@ -302,6 +331,7 @@ def random_masking_ratio(mask: Tensor, ratio: float, probability: float) -> Tens
 MASKING_FUNCTIONS: dict[str, Callable[..., Tensor]] = {
     "random_masking": random_masking,
     "random_masking_ratio": random_masking_ratio,
+    "random_channel_masking": random_channel_masking,
 }
 
 

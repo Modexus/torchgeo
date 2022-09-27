@@ -90,7 +90,7 @@ def init_weights(m: Module) -> None:
     """Initialize the weights."""
     if isinstance(m, Linear):
         init.xavier_uniform_(m.weight)
-        if isinstance(m, Linear) and m.bias is not None:
+        if m.bias is not None:
             init.constant_(m.bias, 0)
     elif isinstance(m, LayerNorm):
         init.constant_(m.bias, 0)

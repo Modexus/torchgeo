@@ -1,11 +1,13 @@
 """Embedding classifciation task."""
 
-from os.path import isfile
 from typing import Any, Sequence, cast
 
 import torch
+from deepspeed.ops.adam import FusedAdam
 from kornia import augmentation as K
 from pytorch_lightning.core.lightning import LightningModule
+from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
+from timm.scheduler import CosineLRScheduler
 from torch import Tensor, optim
 from torch.nn import (
     BCEWithLogitsLoss,
@@ -22,9 +24,7 @@ from torchmetrics import (
     JaccardIndex,
     MetricCollection,
 )
-from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
-from timm.scheduler import CosineLRScheduler
-from deepspeed.ops.adam import FusedAdam
+
 from ..utils import _to_tuple
 from .byol import BYOLTask
 from .cae import CAETask
@@ -32,6 +32,7 @@ from .mae import MAETask
 from .msae import MSAETask
 from .msn import MSNTask
 from .tile2vec import Tile2VecTask
+from .utils import generate_mask
 from .vicreg import VICRegTask
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -59,15 +60,22 @@ class Augmentations(Module):
 
         self.augmentation = {
             "train": Sequential(
-                K.Resize(size=image_size, align_corners=False),
+                # K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
-                    size=crop_size, align_corners=False, resample="BICUBIC"
+                    size=crop_size,
+                    scale=(0.6, 1.0),
+                    align_corners=False,
+                    resample="BICUBIC",
                 ),
                 K.RandomHorizontalFlip(),
             ),
             "val": Sequential(
-                K.Resize(size=image_size, align_corners=False),
-                K.CenterCrop(size=crop_size, align_corners=False, resample="BICUBIC"),
+                # K.Resize(size=image_size, align_corners=False),
+                K.CenterCrop(size=crop_size, align_corners=False, resample="BICUBIC")
+            ),
+            "test": Sequential(
+                # K.Resize(size=image_size, align_corners=False),
+                K.CenterCrop(size=crop_size, align_corners=False, resample="BICUBIC")
             ),
         }
 
@@ -149,6 +157,8 @@ class EmbeddingEvaluator(LightningModule):
                 }
             )
 
+        self.create_model()
+
         self.val_metrics = self.train_metrics.clone(prefix="val_")
         self.test_metrics = self.train_metrics.clone(prefix="test_")
 
@@ -166,9 +176,7 @@ class EmbeddingEvaluator(LightningModule):
         """Creates the model."""
         self.projector: Module | None = None
         if self.hyperparams["task_name"] == "tile2vec":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = Tile2VecTask.load_from_checkpoint(
                     checkpoint_path=self.hyperparams["checkpoint_path"]
                 )
@@ -182,9 +190,7 @@ class EmbeddingEvaluator(LightningModule):
             else:
                 self.encoder = task.model
         elif self.hyperparams["task_name"] == "byol":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = BYOLTask.load_from_checkpoint(
                     self.hyperparams["checkpoint_path"]
                 )
@@ -195,9 +201,7 @@ class EmbeddingEvaluator(LightningModule):
                 task.freeze()
             self.encoder = task.model.encoder.model
         elif self.hyperparams["task_name"] == "vicreg":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = VICRegTask.load_from_checkpoint(
                     self.hyperparams["checkpoint_path"]
                 )
@@ -208,9 +212,7 @@ class EmbeddingEvaluator(LightningModule):
                 task.freeze()
             self.encoder = task.model.encoder
         elif self.hyperparams["task_name"] == "mae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = MAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
                 print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
             else:
@@ -219,9 +221,7 @@ class EmbeddingEvaluator(LightningModule):
                 task.freeze()
             self.encoder = task.model.encoder
         elif self.hyperparams["task_name"] == "cae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = CAETask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
                 print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
             else:
@@ -231,9 +231,7 @@ class EmbeddingEvaluator(LightningModule):
             self.encoder = task.model.encoder
 
         elif self.hyperparams["task_name"] == "msn":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = MSNTask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
                 print(f"Loaded from checkpoint: {self.hyperparams['checkpoint_path']}")
             else:
@@ -242,9 +240,7 @@ class EmbeddingEvaluator(LightningModule):
                 task.freeze()
             self.encoder = task.model
         elif self.hyperparams["task_name"] == "msae":
-            if "checkpoint_path" in self.hyperparams and isfile(
-                self.hyperparams["checkpoint_path"]
-            ):
+            if "checkpoint_path" in self.hyperparams:
                 task = MSAETask.load_from_checkpoint(
                     self.hyperparams["checkpoint_path"]
                 )
@@ -261,8 +257,27 @@ class EmbeddingEvaluator(LightningModule):
                 f"Task type '{self.hyperparams['task_name']}' is not valid."
             )
 
+        self.mask_fns = self.hyperparams.get("mask_fns", None)
+        self.mask_kwargs = self.hyperparams.get("mask_kwargs", None)
+
+        mask = (
+            generate_mask(
+                self.mask_fns,
+                self.mask_kwargs,
+                self.num_patches,
+                self.in_channels,
+                self.device,
+            ).flatten()
+            if self.mask_fns is not None
+            else None
+        )
+
         output = self.get_latent(
-            torch.zeros((2, self.in_channels, self.crop_size[0], self.crop_size[1]))
+            torch.zeros(
+                (2, self.in_channels, self.crop_size[0], self.crop_size[1]),
+                device=self.device,
+            ),
+            mask,
         )
         if isinstance(output, Sequence):
             output = output[0]
@@ -289,7 +304,8 @@ class EmbeddingEvaluator(LightningModule):
 
     def configure_sharded_model(self):
         """Configures the model for sharded training."""
-        self.create_model()
+        pass
+        # self.create_model()
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a LightningModule for pre-training a model with Tile2Vec.
@@ -370,7 +386,40 @@ class EmbeddingEvaluator(LightningModule):
         else:
             scheduler.step(metric, epoch=self.global_step)
 
-    def get_latent(self, x: Tensor) -> Tensor:
+    def shared_step(
+        self, stage: str = "train", *args: Any, **kwargs: Any
+    ) -> dict[str, Tensor]:
+        """Perform a step of the model."""
+        batch = args[0]
+        x = batch["image"] if isinstance(batch, dict) else batch[0]
+        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        y = batch["label"] if isinstance(batch, dict) else batch[1]
+        y = y.squeeze()
+
+        with torch.no_grad():
+            x = (
+                self.augment(x, stage)
+                if x.dtype != torch.bfloat16
+                else self.augment(x.half(), stage).bfloat16()
+            )
+            mask = (
+                generate_mask(
+                    self.mask_fns,
+                    self.mask_kwargs,
+                    self.num_patches,
+                    self.in_channels,
+                    x.device,
+                ).flatten()
+                if self.mask_fns is not None and stage != "test"
+                else None
+            )
+
+        latent = self.get_latent(x, mask)
+        loss = self.evaluate_classification(latent, y, stage)
+
+        return {"loss": loss, "latent": latent}
+
+    def get_latent(self, x: Tensor, mask: Tensor) -> Tensor:
         """TODO: Docstring."""
         B, *_ = x.shape
 
@@ -383,6 +432,7 @@ class EmbeddingEvaluator(LightningModule):
             "encoder_channels": torch.arange(
                 self.in_channels, device=x.device
             ).tolist(),
+            "mask": mask,
         }
 
         latent: Tensor = self.encoder(item)
@@ -415,24 +465,6 @@ class EmbeddingEvaluator(LightningModule):
         y_hat = self.classifier(latent)
 
         return cast(Tensor, y_hat)
-
-    def shared_step(
-        self, stage: str = "train", *args: Any, **kwargs: Any
-    ) -> dict[str, Tensor]:
-        """Perform a step of the model."""
-        batch = args[0]
-        x = batch["image"] if isinstance(batch, dict) else batch[0]
-        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
-        y = batch["label"] if isinstance(batch, dict) else batch[1]
-        y = y.squeeze()
-
-        with torch.no_grad():
-            aug = self.augment(x, stage)
-            latent = self.get_latent(aug)
-
-        loss = self.evaluate_classification(latent, y, stage)
-
-        return {"loss": loss, "latent": latent}
 
     def training_step(self, *args: Any, **kwargs: Any) -> Any:
         """Perform a train step of the model."""
@@ -471,14 +503,14 @@ class EmbeddingEvaluator(LightningModule):
         self.log(
             f"{stage}_loss",
             loss,
-            on_step=stage == "train",
+            on_step=False,
             on_epoch=True,
             batch_size=self.batch_size,
             sync_dist=True,
         )
         self.log_dict(
             metrics,
-            on_step=stage != "val",
+            on_step=False,
             on_epoch=True,
             batch_size=self.batch_size,
             sync_dist=True,

@@ -280,19 +280,19 @@
             "justMyCode": false
         },
         {
-            "name": "Python: mae_bigearthnet_evaluate",
+            "name": "Python: mae_bigearthnet_linearprobing",
             "type": "python",
             "request": "launch",
             "program": "train.py",
             "console": "integratedTerminal",
             "args": [
-                "config_file=conf/mae_bigearthnet_evaluate.yaml",
+                "config_file=conf/mae_bigearthnet_linearprobing.yaml",
                 "program.seed=666",
-                "program.output_dir=/data/users/mike/experiments",
-                "program.log_dir=/data/users/mike/logs",
+                "program.output_dir=/scratch/users/mike/experiments",
+                "program.log_dir=/scratch/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[0]"
+                "trainer.gpus=[0,1,2,3]"
             ],
             "justMyCode": true
         },

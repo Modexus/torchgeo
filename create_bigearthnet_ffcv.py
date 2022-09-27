@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 import rasterio
 import torch
-from ffcv.fields import NDArrayField, FloatField
+from ffcv.fields import NDArrayField
 from ffcv.writer import DatasetWriter
 from rasterio.enums import Resampling
 from torch import Tensor

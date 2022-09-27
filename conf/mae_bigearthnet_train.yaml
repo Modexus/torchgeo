@@ -4,9 +4,9 @@ trainer:
   precision: "bf16"
   accumulate_grad_batches: 4
   max_epochs: 800
-  # limit_train_batches: 1.0
+  limit_train_batches: 1.0
   # log_every_n_steps: 1
-  limit_val_batches: 0.125
+  limit_val_batches: 1
   check_val_every_n_epoch: 10
   benchmark: True
   enable_progress_bar: True
@@ -23,11 +23,12 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
-    resume_checkpoint: "epoch=639-step=41600.ckpt"
+    # resume_checkpoint: "epoch=799-step=52000.ckpt"
     image_size: 120
     crop_size: 96
     patch_size: 8
     batch_size: ${experiment.datamodule.batch_size} 
+    create_sharded: True
     channel_wise: True
     channel_shuffle: True
     mask_tokens_encoder: False
