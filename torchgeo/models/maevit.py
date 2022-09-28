@@ -7,7 +7,7 @@ import torch
 from timm.models.layers import Mlp
 from timm.models.vision_transformer import Block
 from torch import Tensor
-from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential
+from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential, ModuleList
 
 from .utils import (
     get_channel_encodings,
@@ -112,6 +112,66 @@ class EncoderEmbedding(Module):
         return x
 
 
+class EncoderEmbeddingMultipleConv(Module):
+    """Compute the 2d image patch embedding ready to pass to transformer encoder."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int,
+        patch_size: int,
+        image_size: int,
+        channel_wise: bool = False,
+        mask_tokens_encoder: bool = False,
+    ) -> None:
+        """Initialize the encoder embedding module."""
+        super().__init__()
+
+        self.num_patches = (image_size // patch_size) ** 2
+        self.channel_wise = channel_wise
+        self.mask_tokens_encoder = mask_tokens_encoder
+
+        self.embedders = ModuleList(
+            Conv2d(
+                input_dim if not channel_wise else 1,
+                embed_dim,
+                kernel_size=patch_size,
+                stride=patch_size,
+            )
+            for _ in range(input_dim)
+        )
+
+        self.apply(init_weights)
+
+        self.apply(init_weights)
+
+    def forward(self, x: Tensor, channels: tuple[int, ...] = ()) -> Tensor:
+        """Forward pass of the encoder embedding module.
+
+        First embed the image to patches.
+        Secondly, add the positional embeddings for each patch.
+        Finally, add the channel embeddings if channels are passed.
+        """
+        *_, P = x.shape
+        x = x.view(-1, len(channels), P, P)
+        xs = []
+        for i, embedder in enumerate(self.embedders):
+            xx = embedder(x[:, i : i + 1])
+            B, H, PW, _ = xx.shape
+            xx = xx.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
+            xs.append(xx)
+        x = torch.stack(xs, dim=1).flatten(0, 1)
+
+        *_, H = x.shape
+        x += get_positional_encodings(H, self.num_patches, self.channel_wise, x.device)
+
+        if self.channel_wise:
+            x = x.reshape(-1, len(channels) * PW**2, H)
+            x += get_channel_encodings(H, channels, self.num_patches, x.device)
+
+        return x
+
+
 class MaskedEncoderViT(Module):
     """Vision transformer (ViT) module."""
 
@@ -139,7 +199,7 @@ class MaskedEncoderViT(Module):
         self.use_mask_tokens_decoder = mask_tokens_decoder
         self.mask_tokens_reduction = mask_tokens_reduction_encoder
 
-        self.embed_module = EncoderEmbedding(
+        self.embed_module = EncoderEmbeddingMultipleConv(
             in_channels,
             embed_dim,
             patch_size,
@@ -279,6 +339,11 @@ class MaskedDecoderViT(Module):
 
         self.apply(init_weights)
 
+        self.predictors = ModuleList(
+            Mlp(in_features=decoder_embed_dim, out_features=out_features)
+            for _ in range(out_channels)
+        )
+
     def apply_mask_tokens(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
         """Apply mask tokens to the decoder input."""
         if mask is not None:
@@ -316,6 +381,26 @@ class MaskedDecoderViT(Module):
 
         return x
 
+    def predict_multiple_predictors(
+        self, x: Tensor, channels: tuple[int, ...]
+    ) -> Tensor:
+        """Predict the pixel values of the image patch-by-patch."""
+        if len(channels) == 0:
+            return cast(Tensor, self.predictor(x))
+
+        x = x.repeat(1, len(channels), 1)
+        if len(channels):
+            B, PS, H = x.shape
+            x += get_channel_encodings(H, channels, self.num_patches, x.device)
+
+        x = x.view(B, len(channels), PS // len(channels), H)
+        xs = []
+        for i, predictor in enumerate(self.predictors):
+            xs.append(predictor(x[:, i : i + 1]))
+        x = torch.cat(xs, dim=1).flatten(1, 2)
+
+        return x
+
     def forward(self, item: dict[str, Tensor | list[int]]) -> Tensor:
         """Forward pass of the model."""
         x = cast(Tensor, item["latent"])
@@ -329,7 +414,7 @@ class MaskedDecoderViT(Module):
             x = self.encoder(x)
             x = self.norm(x)
             x = x[:, : self.num_patches]
-        x = self.predict(x, tuple(channels))
+        x = self.predict_multiple_predictors(x, tuple(channels))
         return x
 
 
@@ -362,7 +447,7 @@ class MaskedAutoencoderViT(Module):
 
         self.encoder = MaskedEncoderViT(
             image_size=image_size,
-            in_channels=IN_CHANNELS[sensor][bands],
+            in_channels=12,  # IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
             num_checkpoints=num_checkpoints_encoder,
@@ -379,7 +464,7 @@ class MaskedAutoencoderViT(Module):
             num_patches=self.encoder.num_patches,
             embed_dim=embed_dim,
             decoder_embed_dim=decoder_embed_dim,
-            out_channels=IN_CHANNELS[sensor][bands],
+            out_channels=12,  # IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
             num_checkpoints=num_checkpoints_decoder,
