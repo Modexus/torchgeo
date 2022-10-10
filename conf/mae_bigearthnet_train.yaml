@@ -1,13 +1,12 @@
 trainer:
   accelerator: "gpu"
   devices: [0,1,2,3]
-  precision: "bf16"
+  precision: 16 #"bf16"
   accumulate_grad_batches: 4
   max_epochs: 800
   limit_train_batches: 1.0
-  # log_every_n_steps: 1
   limit_val_batches: 1
-  check_val_every_n_epoch: 10
+  check_val_every_n_epoch: 100
   benchmark: True
   enable_progress_bar: True
   fast_dev_run: False
@@ -23,14 +22,14 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
-    # resume_checkpoint: "epoch=799-step=52000.ckpt"
+    resume_checkpoint: "last.ckpt"
     image_size: 120
     crop_size: 96
     patch_size: 8
     batch_size: ${experiment.datamodule.batch_size} 
-    create_sharded: True
+    # create_sharded: True
     channel_wise: True
-    channel_shuffle: True
+    channel_shuffle: False
     mask_tokens_encoder: False
     mask_tokens_decoder: True
     mask_tokens_reduction_encoder: False
@@ -55,11 +54,11 @@ experiment:
         ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 225 # 100
+        num_keep: 112
         probability: 1.0
     lr: 1.5e-4
     lr_min: 0.0
-    warmup_lr_init: 1.5e-7
+    warmup_lr_init: 0.0
     num_warmup: 40
   datamodule:
     #root_dir: "/scratch/users/mike/data/BigEarthNetStacked"

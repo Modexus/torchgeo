@@ -1,5 +1,6 @@
 """Embedding classifciation task."""
 
+from copy import deepcopy
 from typing import Any, Sequence, cast
 
 import torch
@@ -32,7 +33,7 @@ from .mae import MAETask
 from .msae import MSAETask
 from .msn import MSNTask
 from .tile2vec import Tile2VecTask
-from .utils import generate_mask
+from .utils import LayerWiseDecayScheduler, generate_mask, param_groups_lrd
 from .vicreg import VICRegTask
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -350,21 +351,40 @@ class EmbeddingEvaluator(LightningModule):
         )
         actual_lr = lr * effective_batch_size / 256
         optimizer_kwargs = self.hyperparams.get("optimizer_kwargs", {})
-        optimizer = optimizer_class(
-            self.trainer.model.parameters(), lr=actual_lr, **optimizer_kwargs
-        )
+
+        # Layer-wise LR decay TODO: REMOVE AND TEST AGAIN
+        params = param_groups_lrd(self.encoder.encoder)
+        params += [
+            {"params": p, "weight_decay": optimizer_kwargs["weight_decay"]}
+            for p in self.classifier.parameters()
+        ]
+
+        optimizer = optimizer_class(params=params, lr=actual_lr, **optimizer_kwargs)
+        #     self.trainer.model.parameters(), lr=actual_lr, **optimizer_kwargs
+        # )
 
         lr_min = self.hyperparams.get("lr_min", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1.5e-7)
         num_warmup = self.hyperparams.get("num_warmup", 10)
-        scheduler = CosineLRScheduler(
+        # scheduler = CosineLRScheduler(
+        #     optimizer=optimizer,
+        #     t_initial=self.trainer.max_epochs
+        #     * 768
+        #     // self.trainer.accumulate_grad_batches,  # 263 // 4 = 65 bc of acc grad
+        #     lr_min=lr_min,
+        #     cycle_mul=1.0,
+        #     cycle_limit=1,
+        #     warmup_t=num_warmup * 768 // self.trainer.accumulate_grad_batches,
+        #     warmup_lr_init=warmup_lr_init,
+        # )
+        scheduler = LayerWiseDecayScheduler(
             optimizer=optimizer,
-            t_initial=self.trainer.max_epochs * 65,  # 263 // 4 = 65 bc of acc grad
-            lr_min=lr_min,
-            cycle_mul=1.0,
-            cycle_limit=1,
-            warmup_t=num_warmup * 65,
-            warmup_lr_init=warmup_lr_init,
+            lr=actual_lr,
+            min_lr=lr_min,
+            num_warmup=num_warmup * 506 // self.trainer.accumulate_grad_batches,
+            max_epochs=self.trainer.max_epochs
+            * 506
+            // self.trainer.accumulate_grad_batches,
         )
 
         return {
@@ -392,7 +412,7 @@ class EmbeddingEvaluator(LightningModule):
         """Perform a step of the model."""
         batch = args[0]
         x = batch["image"] if isinstance(batch, dict) else batch[0]
-        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        x = x.permute(0, 3, 1, 2)[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
         y = batch["label"] if isinstance(batch, dict) else batch[1]
         y = y.squeeze()
 
@@ -402,6 +422,9 @@ class EmbeddingEvaluator(LightningModule):
                 if x.dtype != torch.bfloat16
                 else self.augment(x.half(), stage).bfloat16()
             )
+            mask_kwargs = deepcopy(self.mask_kwargs)
+            if stage == "val":
+                mask_kwargs["random_channel_masking"]["num_keep"] = 750
             mask = (
                 generate_mask(
                     self.mask_fns,
@@ -410,7 +433,7 @@ class EmbeddingEvaluator(LightningModule):
                     self.in_channels,
                     x.device,
                 ).flatten()
-                if self.mask_fns is not None and stage != "test"
+                if self.mask_fns is not None
                 else None
             )
 

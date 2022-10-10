@@ -6,16 +6,16 @@
 from typing import Any, cast
 
 import torch
+import wandb
 from deepspeed.ops.adam import FusedAdam
 from kornia import augmentation as K
 from pytorch_lightning.core.module import LightningModule
 from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 from timm.scheduler import CosineLRScheduler
-from torch import Tensor, optim
+from torch import Tensor, memory_format, optim
 from torch.nn.modules import Module, Sequential
 from torchvision.utils import make_grid
 
-import wandb
 from torchgeo.models.utils import reduce_mask_token
 
 from ..models import MaskedAutoencoderViT
@@ -197,6 +197,7 @@ class MAETask(LightningModule):
                 "mask_tokens_reduction_decoder", False
             ),
         )
+        self.model = self.model.to(memory_format=torch.channels_last)
 
     def configure_sharded_model(self) -> None:
         """Configures the model for sharded training."""
@@ -237,11 +238,13 @@ class MAETask(LightningModule):
         )
         scheduler = CosineLRScheduler(
             optimizer=optimizer,
-            t_initial=self.trainer.max_epochs * 65,  # 263 // 4 = 65 bc of acc grad
+            t_initial=self.trainer.max_epochs
+            * 384
+            // self.trainer.accumulate_grad_batches,  # 263 // 4 = 65 bc of acc grad
             lr_min=lr_min,
             cycle_mul=1.0,
             cycle_limit=1,
-            warmup_t=num_warmup * 65,
+            warmup_t=num_warmup * 384 // self.trainer.accumulate_grad_batches,
             warmup_lr_init=warmup_lr_init,
         )
 
@@ -282,7 +285,7 @@ class MAETask(LightningModule):
         """TODO: Docstring."""
         batch = args[0]
         x = batch["image"] if isinstance(batch, dict) else batch[0]
-        x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        x = x.permute(0, 3, 1, 2)[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
         _, self.C, *_ = x.shape
 
         with torch.no_grad():
@@ -301,7 +304,7 @@ class MAETask(LightningModule):
         self.log(
             f"{stage}_loss",
             item["loss"],
-            on_step=stage == "train",
+            on_step=False,
             on_epoch=True,
             batch_size=self.batch_size,
             sync_dist=True,
@@ -329,21 +332,20 @@ class MAETask(LightningModule):
 
         if self.channel_wise:
             if self.channel_shuffle:
-                # encoder_channels = torch.randperm(self.C, device=x.device).tolist()[
-                #     : self.num_in_channels
-                # ]
-                encoder_channels = torch.arange(self.C, device=input.device).tolist()[
+                encoder_channels = torch.randperm(self.C, device=input.device).tolist()[
                     : self.num_in_channels
                 ]
-
+                num_out_channels = torch.randint(
+                    2, self.num_out_channels, (1,)
+                ).item()  # TODO: Check performance
                 decoder_channels = torch.randperm(self.C, device=input.device).tolist()[
-                    : self.num_out_channels
+                    :num_out_channels
                 ]
 
                 input = input[:, encoder_channels]
                 target = target[:, decoder_channels]
                 mask_input = mask_input[encoder_channels]
-                mask_target = mask_target[decoder_channels]
+                # mask_target = mask_target[decoder_channels]
             else:
                 encoder_channels = decoder_channels = torch.arange(
                     self.C, device=input.device
@@ -355,7 +357,7 @@ class MAETask(LightningModule):
             mask_target = mask_target.flatten()
 
         return {
-            "input": input,
+            "input": input.to(memory_format=torch.channels_last),
             "target": target,
             "mask": mask_input,
             "mask_target": mask_target,

@@ -7,7 +7,7 @@ import torch
 from timm.models.layers import Mlp
 from timm.models.vision_transformer import Block
 from torch import Tensor
-from torch.nn import Conv2d, LayerNorm, Linear, Module, Sequential, ModuleList
+from torch.nn import Conv2d, LayerNorm, Linear, Module, ModuleList, Sequential
 
 from .utils import (
     get_channel_encodings,
@@ -127,46 +127,51 @@ class EncoderEmbeddingMultipleConv(Module):
         """Initialize the encoder embedding module."""
         super().__init__()
 
+        self.patch_size = patch_size
         self.num_patches = (image_size // patch_size) ** 2
         self.channel_wise = channel_wise
         self.mask_tokens_encoder = mask_tokens_encoder
 
         self.embedders = ModuleList(
-            Conv2d(
-                input_dim if not channel_wise else 1,
-                embed_dim,
-                kernel_size=patch_size,
-                stride=patch_size,
-            )
+            # Conv2d(
+            #     input_dim if not channel_wise else 1,
+            #     embed_dim,
+            #     kernel_size=patch_size,
+            #     stride=patch_size,
+            # )
+            Linear(self.patch_size**2, embed_dim)
             for _ in range(input_dim)
         )
 
         self.apply(init_weights)
 
-        self.apply(init_weights)
-
-    def forward(self, x: Tensor, channels: tuple[int, ...] = ()) -> Tensor:
+    def forward(
+        self, x: Tensor, channels: tuple[int, ...] = (), mask: Tensor | None = None
+    ) -> Tensor:
         """Forward pass of the encoder embedding module.
 
         First embed the image to patches.
         Secondly, add the positional embeddings for each patch.
         Finally, add the channel embeddings if channels are passed.
         """
-        *_, P = x.shape
-        x = x.view(-1, len(channels), P, P)
+        x = torch.nn.functional.unfold(
+            x, kernel_size=self.patch_size, stride=self.patch_size
+        ).permute(0, 2, 1)
+        x = x.view(-1, len(channels), self.num_patches, self.patch_size**2)
+
         xs = []
-        for i, embedder in enumerate(self.embedders):
-            xx = embedder(x[:, i : i + 1])
-            B, H, PW, _ = xx.shape
-            xx = xx.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
-            xs.append(xx)
+        for i, channel in enumerate(channels):
+            xx = self.embedders[channel - 1](x[:, i : i + 1])
+            # B, H, PW, _ = xx.shape
+            # xx = xx.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
+            xs.append(xx.squeeze())
         x = torch.stack(xs, dim=1).flatten(0, 1)
 
         *_, H = x.shape
         x += get_positional_encodings(H, self.num_patches, self.channel_wise, x.device)
 
         if self.channel_wise:
-            x = x.reshape(-1, len(channels) * PW**2, H)
+            x = x.reshape(-1, len(channels) * self.num_patches, H)
             x += get_channel_encodings(H, channels, self.num_patches, x.device)
 
         return x
@@ -264,7 +269,7 @@ class MaskedEncoderViT(Module):
         channels = [channel + 1 for channel in channels]
         mask = cast(Tensor | None, item.get("mask", None))
 
-        x = self.embed_module(x, channels)
+        x = self.embed_module(x, channels, mask)
 
         if mask is not None:
             x = x[:, ~mask]
@@ -275,7 +280,7 @@ class MaskedEncoderViT(Module):
         x = self.encoder(x)
         x = self.norm(x)
 
-        if self.channel_wise and mask is not None:
+        if self.channel_wise:
             x, item["mask_decoder"] = self.mean_channels(x, mask)
 
         return x
@@ -395,8 +400,8 @@ class MaskedDecoderViT(Module):
 
         x = x.view(B, len(channels), PS // len(channels), H)
         xs = []
-        for i, predictor in enumerate(self.predictors):
-            xs.append(predictor(x[:, i : i + 1]))
+        for i, channel in enumerate(channels):
+            xs.append(self.predictors[channel - 1](x[:, i : i + 1]))
         x = torch.cat(xs, dim=1).flatten(1, 2)
 
         return x

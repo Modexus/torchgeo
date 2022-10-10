@@ -19,9 +19,8 @@ from pytorch_lightning.callbacks import (
     LearningRateMonitor,
     ModelCheckpoint,
 )
-from pytorch_lightning.strategies import DeepSpeedStrategy, DDPStrategy
+from pytorch_lightning.strategies import DDPStrategy
 
-import wandb
 from torchgeo.datamodules import (
     BigEarthNetDataModule,
     ChesapeakeCVPRDataModule,
@@ -259,15 +258,9 @@ def main(conf: DictConfig) -> None:
             save_dir=log_dir,
             project=logger_args.get("project_name", "torchgeo"),
             group=experiment_name,
-            log_model=(not offline),
+            log_model=False,
             offline=offline,
         )
-        if (
-            "devices" not in trainer_args
-            or len(trainer_args["devices"]) == 1
-            and wandb.run is not None
-        ):
-            wandb.run.log_code("torchgeo")
     else:
         raise ValueError(
             f"experiment.task={task_name} is not recognized as a valid task"
@@ -299,12 +292,10 @@ def main(conf: DictConfig) -> None:
 
     trainer = Trainer(
         **trainer_args,
-        strategy=DeepSpeedStrategy(
-            stage=1,
-            allgather_bucket_size=5e8,
-            reduce_bucket_size=5e8,
-            load_full_weights=False,
-            logging_batch_size_per_gpu=task_args["batch_size"],
+        strategy=DDPStrategy(
+            find_unused_parameters=True,
+            static_graph=False,
+            gradient_as_bucket_view=True,
         ),
     )
 

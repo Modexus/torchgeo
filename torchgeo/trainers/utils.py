@@ -3,6 +3,7 @@
 
 """Common trainer utilities."""
 
+import math
 import warnings
 from collections import OrderedDict
 from typing import Any, Callable, Optional, Tuple, Union, cast
@@ -268,7 +269,6 @@ def random_channel_masking(mask: Tensor, num_keep: int, probability: float) -> T
     C, PS = mask.shape
     mask = ~mask
 
-    P = len(mask)
     num_keep_additional = max(0, num_keep - PS)
 
     channel_each_patch = torch.randint(0, C, (PS,), device=mask.device)
@@ -350,3 +350,107 @@ def generate_mask(
         mask = MASKING_FUNCTIONS[masking_name](mask, **mask_kwargs[masking_name])
 
     return mask
+
+
+def param_groups_lrd(
+    model, weight_decay=0.05, no_weight_decay_list=[], layer_decay=0.75
+):
+    """
+    Parameter groups for layer-wise lr decay
+    Following BEiT: https://github.com/microsoft/unilm/blob/master/beit/optim_factory.py#L58
+    """
+    param_group_names = {}
+    param_groups = {}
+
+    num_layers = len(model.blocks) + 1
+
+    layer_scales = list(layer_decay ** (num_layers - i) for i in range(num_layers + 1))
+
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        # no decay: all 1D parameters and model specific ones
+        if p.ndim == 1 or n in no_weight_decay_list:
+            g_decay = "no_decay"
+            this_decay = 0.0
+        else:
+            g_decay = "decay"
+            this_decay = weight_decay
+
+        layer_id = get_layer_id_for_vit(n, num_layers)
+        group_name = "layer_%d_%s" % (layer_id, g_decay)
+
+        if group_name not in param_group_names:
+            this_scale = layer_scales[layer_id]
+
+            param_group_names[group_name] = {
+                "lr_scale": this_scale,
+                "weight_decay": this_decay,
+                "params": [],
+            }
+            param_groups[group_name] = {
+                "lr_scale": this_scale,
+                "weight_decay": this_decay,
+                "params": [],
+            }
+
+        param_group_names[group_name]["params"].append(n)
+        param_groups[group_name]["params"].append(p)
+
+    return list(param_groups.values())
+
+
+def get_layer_id_for_vit(name, num_layers):
+    """Get Id for VIT layer.
+
+    Assign a parameter with its layer id
+    Following BEiT: https://github.com/microsoft/unilm/blob/master/beit/optim_factory.py#L33
+    """
+    if name in ["cls_token", "pos_embed"]:
+        return 0
+    elif name.startswith("patch_embed"):
+        return 0
+    elif name.startswith("blocks"):
+        return int(name.split(".")[1]) + 1
+    else:
+        return num_layers
+
+
+class LayerWiseDecayScheduler(object):
+    def __init__(
+        self, optimizer, lr: int, min_lr: float, num_warmup: int, max_epochs: int
+    ):
+        self.optimizer = optimizer
+        self.lr = lr
+        self.min_lr = min_lr
+        self.num_warmup = num_warmup
+        self.max_epochs = max_epochs
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            key: value for key, value in self.__dict__.items() if key != "optimizer"
+        }
+
+    def load_state_dict(self, state_dict: dict[str, Any]) -> None:
+        self.__dict__.update(state_dict)
+
+    def step(self, epoch: int) -> float:
+        """Decay the learning rate with half-cycle cosine after warmup"""
+        if epoch < self.num_warmup:
+            lr = self.lr * epoch / self.num_warmup
+        else:
+            lr = self.min_lr + (self.lr - self.min_lr) * 0.5 * (
+                1.0
+                + math.cos(
+                    math.pi
+                    * (epoch - self.num_warmup)
+                    / (self.max_epochs - self.num_warmup)
+                )
+            )
+        for param_group in self.optimizer.param_groups:
+            if "lr_scale" in param_group:
+                param_group["lr"] = lr * param_group["lr_scale"]
+            else:
+                param_group["lr"] = lr
+        return lr

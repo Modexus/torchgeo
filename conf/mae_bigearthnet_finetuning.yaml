@@ -1,16 +1,19 @@
 trainer:
-  gpus: [0,1,2,3]
+  accelerator: "gpu"
+  devices: [0,1,2,3]
+  precision: "bf16"
+  accumulate_grad_batches: 4
   max_epochs: 30
-  precision: 32
+  limit_train_batches: 1.0
+  check_val_every_n_epoch: 1
   benchmark: True
-  limit_train_batches: 360
-  limit_val_batches: 40 
+  fast_dev_run: False
 experiment:
   task: "mae_bigearthnet_finetuning"
   name: "mae_bigearthnet_finetuning"
   run:
     fit: True
-    test: True
+    test: False
   module:
     task_name: "mae"
     model: "mae"
@@ -18,16 +21,17 @@ experiment:
     sensor: "naip"
     bands: "all"
     image_size: 120
-    crop_size: 112
+    crop_size: 96
     patch_size: 8
+    #resume_checkpoint: "epoch=99-step=9600.ckpt"
     batch_size: ${experiment.datamodule.batch_size}
-    mean_patches: False
+    mean_patches: True
     channel_wise: True
     multi_label: True
-    in_channels: 14
+    in_channels: 12
     out_channels: 1
     num_classes: 19
-    load_checkpoint: "last.ckpt"
+    load_checkpoint: "epoch=99-step=9600.ckpt"
     imagenet_pretrained: False
     optimizer: "ADAMW"
     lr: 1e-3
@@ -37,15 +41,21 @@ experiment:
         - 0.9
         - 0.999
     lr_min: 0.0
-    warmup_lr_init: 1.5e-7
+    warmup_lr_init: 0.0
     num_warmup: 5
+    mask_fns:
+      - "random_channel_masking"
+    mask_kwargs:
+      random_channel_masking:
+        num_keep: 200
+        probability: 1.0
   datamodule:
     #root_dir: "/data/users/mike/data/BigEarthNetFixed"
     root_dir: "/scratch/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
-    batch_size: 32
-    num_workers: 8
+    batch_size: 256
+    num_workers: 7
     pin_memory: True
     prefetch_factor: 5
     persistent_workers: True
