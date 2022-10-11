@@ -1,10 +1,10 @@
 trainer:
   accelerator: "gpu"
-  devices: [0,1,2,3]
-  precision: "bf16"
-  accumulate_grad_batches: 2
+  devices: [0,1]
+  precision: 32
+  accumulate_grad_batches: 1
+  limit_train_batches: 360
   max_epochs: 100
-  max_time: "00:10:00:00"
   limit_val_batches: 0
   benchmark: True
 experiment:
@@ -21,8 +21,9 @@ experiment:
     bands: "all"
     linear_probing: True
     image_size: 120
-    crop_size: 96
+    crop_size: 112 #96
     patch_size: 8
+    #resume_checkpoint: "epoch=29-step=10800.ckpt"
     batch_size: ${experiment.datamodule.batch_size}
     mean_patches: True
     channel_wise: True
@@ -40,26 +41,26 @@ experiment:
     lr_min: 0.0
     warmup_lr_init: 1.5e-7
     num_warmup: 10
-    mask_fns:
-      - "random_channel_masking"
-    mask_kwargs:
-      random_channel_masking:
-        num_keep: 720
-        probability: 1.0
+    #mask_fns:
+    #  - "random_channel_masking"
+    #mask_kwargs:
+    #  random_channel_masking:
+    #    num_keep: 720
+    #    probability: 1.0
   datamodule:
-    #root_dir: "/data/users/mike/data/BigEarthNetFixed"
-    root_dir: "/scratch/users/mike/data/FFCV"
+    root_dir: "/data/users/mike/data/BigEarthNetStacked"
+    # root_dir: "/data/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
-    batch_size: 512
-    num_workers: 7
+    batch_size: 64
+    num_workers: 4
     pin_memory: True
-    prefetch_factor: 5
+    prefetch_factor: 3
     persistent_workers: True
     load_target: True
-    use_ffcv: True
+    use_ffcv: False
     distributed: True
-    batches_ahead: 4
+    batches_ahead: 3
 logger:
   name: "wandb"
   offline: False

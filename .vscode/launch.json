@@ -55,9 +55,9 @@
             "args": [
                 "config_file=conf/tile2vec_naipcdl_evaluate.yaml",
                 "program.seed=666",
-                "program.output_dir=/cluster/scratch/mboss/experiments",
-                "program.data_dir=/scratch/NAIP",
-                "program.log_dir=/cluster/scratch/mboss/logs",
+                "program.output_dir=/cluster/data/mboss/experiments",
+                "program.data_dir=/data/NAIP",
+                "program.log_dir=/cluster/data/mboss/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
             ],
@@ -269,15 +269,15 @@
             "args": [
                 "config_file=conf/mae_bigearthnet_train.yaml",
                 "program.seed=666",
-                "program.output_dir=/scratch/users/mike/experiments",
-                "experiment.datamodule.naip_root_dir=/scratch/users/mike/data/NAIP",
-                "program.log_dir=/scratch/users/mike/logs",
+                "program.output_dir=/data/users/mike/experiments",
+                "experiment.datamodule.naip_root_dir=/data/users/mike/data/NAIP",
+                "program.log_dir=/data/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
                 "trainer.accelerator=gpu",
-                "trainer.devices=[0,1,2,3]",
+                "trainer.devices=[0]",
             ],
-            "justMyCode": false
+            "justMyCode": true
         },
         {
             "name": "Python: mae_bigearthnet_linearprobing",
@@ -288,11 +288,28 @@
             "args": [
                 "config_file=conf/mae_bigearthnet_linearprobing.yaml",
                 "program.seed=666",
-                "program.output_dir=/scratch/users/mike/experiments",
-                "program.log_dir=/scratch/users/mike/logs",
+                "program.output_dir=/data/users/mike/experiments",
+                "program.log_dir=/data/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[0,1,2,3]"
+                "trainer.gpus=[0,1]"
+            ],
+            "justMyCode": true
+        },
+        {
+            "name": "Python: mae_bigearthnet_finetuning",
+            "type": "python",
+            "request": "launch",
+            "program": "train.py",
+            "console": "integratedTerminal",
+            "args": [
+                "config_file=conf/mae_bigearthnet_finetuning.yaml",
+                "program.seed=666",
+                "program.output_dir=/data/users/mike/experiments",
+                "program.log_dir=/data/users/mike/logs",
+                "program.overwrite=False",
+                "logger.offline=True",
+                "trainer.gpus=[0]"
             ],
             "justMyCode": true
         },

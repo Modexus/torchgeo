@@ -1,12 +1,12 @@
 trainer:
   accelerator: "gpu"
-  devices: [0,1,2,3]
-  precision: "bf16"
-  accumulate_grad_batches: 4
+  devices: [0,1]
+  precision: 32
+  accumulate_grad_batches: 1
   max_epochs: 800
-  limit_train_batches: 1.0
+  limit_train_batches: 50
   # log_every_n_steps: 1
-  limit_val_batches: 1
+  limit_val_batches: 0 #40
   check_val_every_n_epoch: 10
   benchmark: True
   enable_progress_bar: True
@@ -23,7 +23,7 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
-    # resume_checkpoint: "epoch=799-step=52000.ckpt"
+    # resume_checkpoint: "epoch=639-step=41600.ckpt"
     image_size: 120
     crop_size: 96
     patch_size: 8
@@ -40,13 +40,13 @@ experiment:
     num_out_channels: 12
     num_checkpoints_encoder: 0
     num_checkpoints_decoder: 0
-    mlp_ratio: 4.0
+    mlp_ratio: 1.0
     embed_dim: 1024
-    depth: 24
-    num_heads: 16
+    depth: 4
+    num_heads: 2
     decoder_embed_dim: 1024
-    decoder_depth: 8
-    decoder_num_heads: 16
+    decoder_depth: 2
+    decoder_num_heads: 1
     mask_fns:
       - "random_masking_ratio"
       - "random_masking"
@@ -55,26 +55,26 @@ experiment:
         ratio: 0.7
         probability: 1.0
       random_masking:
-        num_keep: 225 # 100
+        num_keep: 225
         probability: 1.0
     lr: 1.5e-4
     lr_min: 0.0
     warmup_lr_init: 1.5e-7
-    num_warmup: 40
+    num_warmup: 2
   datamodule:
-    #root_dir: "/scratch/users/mike/data/BigEarthNetStacked"
-    root_dir: "/scratch/users/mike/data/FFCV"
+    root_dir: "/data/users/mike/data/BigEarthNetStacked"
+    #root_dir: "/data/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
-    batch_size: 256
-    num_workers: 7
+    batch_size: 64
+    num_workers: 8
     pin_memory: True
     prefetch_factor: 2
-    persistent_workers: False
+    persistent_workers: True
     load_target: False
-    use_ffcv: True
-    distributed: True
-    batches_ahead: 4
+    use_ffcv: False
+    distributed: False
+    batches_ahead: 3
 logger:
   name: "wandb"
   offline: False

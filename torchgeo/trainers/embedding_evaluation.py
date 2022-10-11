@@ -359,11 +359,11 @@ class EmbeddingEvaluator(LightningModule):
         num_warmup = self.hyperparams.get("num_warmup", 10)
         scheduler = CosineLRScheduler(
             optimizer=optimizer,
-            t_initial=self.trainer.max_epochs * 65,  # 263 // 4 = 65 bc of acc grad
+            t_initial=self.trainer.max_epochs * 360,  # 263 // 4 = 65 bc of acc grad
             lr_min=lr_min,
             cycle_mul=1.0,
             cycle_limit=1,
-            warmup_t=num_warmup * 65,
+            warmup_t=num_warmup * 360,
             warmup_lr_init=warmup_lr_init,
         )
 

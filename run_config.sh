@@ -1,7 +1,7 @@
 #!/bin/bash
 CONFIG_FILE="~/torchgeo/conf/tile2vec_naipcdl_train.yaml"
 SEED=666
-DATA_DIR="/scratch/users/mike"
+DATA_DIR="/data/users/mike"
 OUTPUT_DIR="$DATA_DIR/experiments"
 LOG_DIR="$DATA_DIR/logs"
 OVERWRITE=false

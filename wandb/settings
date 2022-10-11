@@ -1,0 +1,5 @@
+[default]
+entity = mikeboss
+project = master-thesis
+base_url = https://api.wandb.ai
+

@@ -218,6 +218,7 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 fname=self.train_dataset_path,
                 batch_size=self.batch_size,
                 num_workers=self.num_workers,
+                os_cache=False,
                 order=OrderOption.QUASI_RANDOM
                 if not self.distributed
                 else OrderOption.RANDOM,
@@ -255,6 +256,7 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 fname=self.val_dataset_path,
                 batch_size=self.batch_size,
                 num_workers=self.num_workers,
+                os_cache=False,
                 order=OrderOption.SEQUENTIAL,
                 distributed=self.distributed,
                 batches_ahead=self.batches_ahead,
@@ -288,6 +290,7 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 fname=self.test_dataset_path,
                 batch_size=self.batch_size,
                 num_workers=self.num_workers,
+                os_cache=False,
                 order=OrderOption.SEQUENTIAL,
                 distributed=self.distributed,
                 pipelines=self.test_pipeline,

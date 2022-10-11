@@ -1,10 +1,11 @@
 trainer:
-  gpus: [0,1,2,3]
-  max_epochs: 30
+  accelerator: "gpu"
+  devices: [0,1]
   precision: 32
-  benchmark: True
+  max_epochs: 30
   limit_train_batches: 360
-  limit_val_batches: 40 
+  limit_val_batches: 0 
+  benchmark: True
 experiment:
   task: "mae_bigearthnet_finetuning"
   name: "mae_bigearthnet_finetuning"
@@ -18,13 +19,14 @@ experiment:
     sensor: "naip"
     bands: "all"
     image_size: 120
-    crop_size: 112
+    crop_size: 112 # 96
     patch_size: 8
+    resume_checkpoint: "last.ckpt"
     batch_size: ${experiment.datamodule.batch_size}
-    mean_patches: False
+    mean_patches: True
     channel_wise: True
     multi_label: True
-    in_channels: 14
+    in_channels: 12
     out_channels: 1
     num_classes: 19
     load_checkpoint: "last.ckpt"
@@ -39,18 +41,24 @@ experiment:
     lr_min: 0.0
     warmup_lr_init: 1.5e-7
     num_warmup: 5
+    mask_fns:
+      - "random_channel_masking"
+    mask_kwargs:
+      random_channel_masking:
+        num_keep: 750
+        probability: 1.0
   datamodule:
-    #root_dir: "/data/users/mike/data/BigEarthNetFixed"
-    root_dir: "/scratch/users/mike/data/FFCV"
+    root_dir: "/data/users/mike/data/BigEarthNetStacked"
+    #root_dir: "/scratch/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
     batch_size: 32
-    num_workers: 8
+    num_workers: 4
     pin_memory: True
     prefetch_factor: 5
     persistent_workers: True
     load_target: True
-    use_ffcv: True
+    use_ffcv: False
     distributed: True
     batches_ahead: 4
 logger:

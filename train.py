@@ -297,16 +297,26 @@ def main(conf: DictConfig) -> None:
     trainer_args["logger"] = logger
     trainer_args["default_root_dir"] = experiment_dir
 
-    trainer = Trainer(
-        **trainer_args,
-        strategy=DeepSpeedStrategy(
-            stage=1,
-            allgather_bucket_size=5e8,
-            reduce_bucket_size=5e8,
-            load_full_weights=False,
-            logging_batch_size_per_gpu=task_args["batch_size"],
-        ),
-    )
+    if "devices" not in trainer_args or len(trainer_args["devices"]) == 1:
+        trainer = Trainer(**trainer_args)
+    else:
+        trainer = Trainer(
+            **trainer_args,
+            # strategy=DeepSpeedStrategy(
+            #     stage=1,
+            #     allgather_bucket_size=2e8,
+            #     reduce_bucket_size=2e8,
+            #     load_full_weights=False,
+            #     logging_batch_size_per_gpu=task_args["batch_size"],
+            # ),
+            strategy=DDPStrategy(
+                find_unused_parameters=False,
+                static_graph=True,
+                gradient_as_bucket_view=True,
+            ),
+            # TODO: REMOVE PROFILER
+            # profiler="pytorch",
+        )
 
     if trainer_args.get("auto_lr_find"):
         trainer.tune(model=task, datamodule=datamodule)
