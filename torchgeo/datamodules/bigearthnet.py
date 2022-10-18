@@ -140,9 +140,11 @@ class BigEarthNetDataModule(pl.LightningDataModule):
         """
         if self.use_ffcv:
             self.train_dataset_path = os.path.join(
-                self.root_dir, "BigEarthNet_train.beton"
+                self.root_dir, "BigEarthNet_trainval.beton"
             )
-            self.val_dataset_path = os.path.join(self.root_dir, "BigEarthNet_val.beton")
+            self.val_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_test.beton"
+            )
             self.test_dataset_path = os.path.join(
                 self.root_dir, "BigEarthNet_test.beton"
             )
@@ -164,9 +166,11 @@ class BigEarthNetDataModule(pl.LightningDataModule):
         """
         if self.use_ffcv:
             self.train_dataset_path = os.path.join(
-                self.root_dir, "BigEarthNet_train.beton"
+                self.root_dir, "BigEarthNet_trainval.beton"
             )
-            self.val_dataset_path = os.path.join(self.root_dir, "BigEarthNet_val.beton")
+            self.val_dataset_path = os.path.join(
+                self.root_dir, "BigEarthNet_test.beton"
+            )
             self.test_dataset_path = os.path.join(
                 self.root_dir, "BigEarthNet_test.beton"
             )
