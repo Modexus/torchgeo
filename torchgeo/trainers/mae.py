@@ -12,7 +12,7 @@ from kornia import augmentation as K
 from pytorch_lightning.core.module import LightningModule
 from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
 from timm.scheduler import CosineLRScheduler
-from torch import Tensor, memory_format, optim
+from torch import Tensor, optim
 from torch.nn.modules import Module, Sequential
 from torchvision.utils import make_grid
 
@@ -38,7 +38,7 @@ def masked_reconstruction_loss(
     norm_pix_loss: bool = False,
 ) -> Tensor:
     """Compute masked reconstruction loss."""
-    B, *_ = pred.shape
+    B, P, _ = pred.shape
 
     target = patchify(target, patch_size)
     _, PS, _ = target.shape
@@ -53,7 +53,8 @@ def masked_reconstruction_loss(
     loss = loss.mean(dim=-1)  # [N, L], mean loss per patch
 
     # Only completely hidden patches contribute to the loss
-    mask = ((~mask.view(-1, PS)).sum(0) == 0).repeat(len(mask) // PS)
+    mask = (~mask.view(-1, PS)).sum(0) == 0
+    mask = mask.repeat(P // len(mask))
     loss = (loss * mask).sum() / (B * mask.sum())  # mean loss on removed patches
 
     return cast(Tensor, loss)
@@ -83,7 +84,7 @@ class Augmentations(Module):
                 # K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.6, 1.0),
+                    scale=(0.2, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),
@@ -121,6 +122,7 @@ class MAETask(LightningModule):
         self.channel_wise = self.hyperparams.get("channel_wise", False)
         self.channel_shuffle = self.hyperparams.get("channel_shuffle", False)
         self.embed_dim = self.hyperparams.get("embed_dim", 1024)
+        self.decoder_embed_dim = self.hyperparams.get("decoder_embed_dim", 512)
         self.embed_token = self.hyperparams.get("embed_token", False)
         self.embed_token_reduction = self.hyperparams.get(
             "embed_token_reduction", False
@@ -185,7 +187,7 @@ class MAETask(LightningModule):
             depth=self.hyperparams.get("depth", 24),
             num_heads=self.hyperparams.get("num_heads", 16),
             mlp_ratio=self.hyperparams.get("mlp_ratio", 4.0),
-            decoder_embed_dim=self.hyperparams.get("decoder_embed_dim", 512),
+            decoder_embed_dim=self.decoder_embed_dim,
             decoder_depth=self.hyperparams.get("decoder_depth", 2),
             decoder_num_heads=self.hyperparams.get("decoder_num_heads", 1),
             mask_tokens_encoder=self.hyperparams.get("mask_tokens_encoder", False),
@@ -285,7 +287,9 @@ class MAETask(LightningModule):
         """TODO: Docstring."""
         batch = args[0]
         x = batch["image"] if isinstance(batch, dict) else batch[0]
-        x = x.permute(0, 3, 1, 2)[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        x = x.permute(0, 3, 1, 2)[
+            :, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]
+        ]  # TODO: Remove permute -> ffcv saved wrong
         _, self.C, *_ = x.shape
 
         with torch.no_grad():
@@ -332,23 +336,26 @@ class MAETask(LightningModule):
 
         if self.channel_wise:
             if self.channel_shuffle:
-                encoder_channels = torch.randperm(self.C, device=input.device).tolist()[
-                    : self.num_in_channels
-                ]
-                num_out_channels = torch.randint(
-                    2, self.num_out_channels, (1,)
-                ).item()  # TODO: Check performance
-                decoder_channels = torch.randperm(self.C, device=input.device).tolist()[
-                    :num_out_channels
-                ]
+                num_in_channels = torch.randint(4, self.num_in_channels, (1,)).item()
+                encoder_channels = torch.randperm(
+                    self.num_in_channels, device=input.device
+                ).tolist()[:num_in_channels]
+
+                num_out_channels = torch.randint(4, self.num_out_channels, (1,)).item()
+                decoder_channels = torch.randperm(
+                    self.num_out_channels, device=input.device
+                ).tolist()[:num_out_channels]
 
                 input = input[:, encoder_channels]
                 target = target[:, decoder_channels]
                 mask_input = mask_input[encoder_channels]
-                # mask_target = mask_target[decoder_channels]
+                # mask_target = mask_target[encoder_channels]
             else:
-                encoder_channels = decoder_channels = torch.arange(
-                    self.C, device=input.device
+                encoder_channels = torch.arange(
+                    self.num_in_channels, device=input.device
+                ).tolist()
+                decoder_channels = torch.arange(
+                    self.num_out_channels, device=input.device
                 ).tolist()
 
             input = input.flatten(0, 1).unsqueeze(1)
@@ -360,7 +367,7 @@ class MAETask(LightningModule):
             "input": input.to(memory_format=torch.channels_last),
             "target": target,
             "mask": mask_input,
-            "mask_target": mask_target,
+            "mask_target": mask_input,
             "encoder_channels": encoder_channels,
             "decoder_channels": decoder_channels,
         }
@@ -417,15 +424,12 @@ class MAETask(LightningModule):
         )
 
         if self.channel_wise:
-            pred = pred.view(
-                self.batch_size * self.num_out_channels, self.num_patches, -1
-            )
+            pred = pred.view(-1, self.num_patches, self.embed_dim)
 
-        input_patch = patchify(input, self.patch_size).view(
-            self.batch_size, self.num_in_channels * self.num_patches, -1
-        )
-        input_patch = input_patch[:, ~mask_input]
+        input_patch = patchify(input, self.patch_size)
         *_, H = input_patch.shape
+        input_patch = input_patch.view(self.batch_size, -1, H)
+        input_patch = input_patch[:, ~mask_input]
 
         masked_input = torch.zeros(
             (self.batch_size, self.num_patches, H),
@@ -450,6 +454,9 @@ class MAETask(LightningModule):
                 self.batch_size, -1, self.crop_size, self.crop_size
             )[:, :3]
             pred = pred.view(self.batch_size, -1, self.crop_size, self.crop_size)[:, :3]
+
+        pred -= pred.min()
+        pred /= pred.max()
 
         images = pad_imgs_dims([input, masked_input, pred, target], 3)
 
