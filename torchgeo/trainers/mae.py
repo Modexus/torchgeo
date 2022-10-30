@@ -121,6 +121,8 @@ class MAETask(LightningModule):
         self.patch_size = self.hyperparams.get("patch_size", 16)
         self.channel_wise = self.hyperparams.get("channel_wise", False)
         self.channel_shuffle = self.hyperparams.get("channel_shuffle", False)
+        self.multi_conv = self.hyperparams.get("multi_conv", False)
+        self.satmae = self.hyperparams.get("satmae", False)
         self.embed_dim = self.hyperparams.get("embed_dim", 1024)
         self.decoder_embed_dim = self.hyperparams.get("decoder_embed_dim", 512)
         self.embed_token = self.hyperparams.get("embed_token", False)
@@ -150,8 +152,8 @@ class MAETask(LightningModule):
         self.augment = Augmentations(image_size, crop_size)
 
         self.create_sharded = self.hyperparams.get("create_sharded", False)
-        if not self.create_sharded:
-            self.create_model()
+        # if not self.create_sharded:
+        self.create_model()
 
     def __init__(self, **kwargs: Any) -> None:
         """Initialize a LightningModule for pre-training a model with BYOL.
@@ -181,6 +183,8 @@ class MAETask(LightningModule):
             image_size=self.crop_size,
             patch_size=self.patch_size,
             channel_wise=self.channel_wise,
+            multi_conv=self.multi_conv,
+            satmae=self.satmae,
             num_checkpoints_encoder=self.num_checkpoints_encoder,
             num_checkpoints_decoder=self.num_checkpoints_decoder,
             embed_dim=self.embed_dim,
@@ -203,6 +207,7 @@ class MAETask(LightningModule):
 
     def configure_sharded_model(self) -> None:
         """Configures the model for sharded training."""
+        return  # TODO: Remove
         if self.create_sharded:
             self.create_model()
 
@@ -241,12 +246,12 @@ class MAETask(LightningModule):
         scheduler = CosineLRScheduler(
             optimizer=optimizer,
             t_initial=self.trainer.max_epochs
-            * 384
+            * 768  # 384
             // self.trainer.accumulate_grad_batches,  # 263 // 4 = 65 bc of acc grad
             lr_min=lr_min,
             cycle_mul=1.0,
             cycle_limit=1,
-            warmup_t=num_warmup * 384 // self.trainer.accumulate_grad_batches,
+            warmup_t=num_warmup * 768 // self.trainer.accumulate_grad_batches,  # 384
             warmup_lr_init=warmup_lr_init,
         )
 
@@ -326,8 +331,19 @@ class MAETask(LightningModule):
             if input.dtype != torch.bfloat16
             else self.augment(input.half(), stage).bfloat16()
         )
+        if self.satmae:
+            mask_num_channels = 3
+        elif self.channel_wise:
+            mask_num_channels = self.C
+        else:
+            mask_num_channels = 1
+
         mask_input = generate_mask(
-            self.mask_fns, self.mask_kwargs, self.num_patches, self.C, input.device
+            self.mask_fns,
+            self.mask_kwargs,
+            self.num_patches,
+            mask_num_channels,
+            input.device,
         )
 
         target = input.clone()
@@ -336,12 +352,16 @@ class MAETask(LightningModule):
 
         if self.channel_wise:
             if self.channel_shuffle:
-                num_in_channels = torch.randint(4, self.num_in_channels, (1,)).item()
+                num_in_channels = torch.randint(
+                    4, self.num_in_channels + 1, (1,)
+                ).item()
                 encoder_channels = torch.randperm(
                     self.num_in_channels, device=input.device
                 ).tolist()[:num_in_channels]
 
-                num_out_channels = torch.randint(4, self.num_out_channels, (1,)).item()
+                num_out_channels = torch.randint(
+                    4, self.num_out_channels + 1, (1,)
+                ).item()
                 decoder_channels = torch.randperm(
                     self.num_out_channels, device=input.device
                 ).tolist()[:num_out_channels]
@@ -360,8 +380,9 @@ class MAETask(LightningModule):
 
             input = input.flatten(0, 1).unsqueeze(1)
             target = target.flatten(0, 1).unsqueeze(1)
-            mask_input = mask_input.flatten()
-            mask_target = mask_target.flatten()
+
+        mask_input = mask_input.flatten()
+        mask_target = mask_target.flatten()
 
         return {
             "input": input.to(memory_format=torch.channels_last),
@@ -423,11 +444,14 @@ class MAETask(LightningModule):
             item["mask"],
         )
 
+        *_, H = pred.shape
         if self.channel_wise:
-            pred = pred.view(-1, self.num_patches, self.embed_dim)
+            pred = pred.view(-1, self.num_patches, H)
+
+        if self.satmae:
+            mask_input = mask_input.repeat(4)
 
         input_patch = patchify(input, self.patch_size)
-        *_, H = input_patch.shape
         input_patch = input_patch.view(self.batch_size, -1, H)
         input_patch = input_patch[:, ~mask_input]
 
@@ -455,8 +479,8 @@ class MAETask(LightningModule):
             )[:, :3]
             pred = pred.view(self.batch_size, -1, self.crop_size, self.crop_size)[:, :3]
 
-        pred -= pred.min()
-        pred /= pred.max()
+        # pred -= pred.min()
+        # pred /= pred.max()
 
         images = pad_imgs_dims([input, masked_input, pred, target], 3)
 

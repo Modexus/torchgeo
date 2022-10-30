@@ -64,7 +64,7 @@ class Augmentations(Module):
                 # K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.6, 1.0),
+                    scale=(0.2, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),
@@ -230,7 +230,6 @@ class EmbeddingEvaluator(LightningModule):
             if self.linear_probing:
                 task.freeze()
             self.encoder = task.model.encoder
-
         elif self.hyperparams["task_name"] == "msn":
             if "checkpoint_path" in self.hyperparams:
                 task = MSNTask.load_from_checkpoint(self.hyperparams["checkpoint_path"])
@@ -266,7 +265,7 @@ class EmbeddingEvaluator(LightningModule):
                 self.mask_fns,
                 self.mask_kwargs,
                 self.num_patches,
-                self.in_channels,
+                self.in_channels if self.channel_wise else 1,
                 self.device,
             ).flatten()
             if self.mask_fns is not None
@@ -423,14 +422,14 @@ class EmbeddingEvaluator(LightningModule):
                 else self.augment(x.half(), stage).bfloat16()
             )
             mask_kwargs = deepcopy(self.mask_kwargs)
-            if stage == "val":
-                mask_kwargs["random_channel_masking"]["num_keep"] = 750
+            # if stage == "val":
+            #     mask_kwargs["random_channel_masking"]["num_keep"] = 750
             mask = (
                 generate_mask(
                     self.mask_fns,
                     self.mask_kwargs,
                     self.num_patches,
-                    self.in_channels,
+                    self.in_channels if self.channel_wise else 1,
                     x.device,
                 ).flatten()
                 if self.mask_fns is not None

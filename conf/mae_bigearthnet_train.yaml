@@ -1,9 +1,9 @@
 trainer:
   accelerator: "gpu"
   devices: [0,1,2,3]
-  precision: 16 #"bf16"
-  accumulate_grad_batches: 4
-  max_epochs: 800
+  precision: "bf16"
+  accumulate_grad_batches: 8
+  max_epochs: 400
   limit_train_batches: 1.0
   limit_val_batches: 1
   check_val_every_n_epoch: 100
@@ -22,7 +22,7 @@ experiment:
     sensor: "naip"
     imagenet_pretrained: False
     pretrained: False
-    resume_checkpoint: "last.ckpt"
+    # resume_checkpoint: "last.ckpt"
     image_size: 120
     crop_size: 96
     patch_size: 8
@@ -30,10 +30,12 @@ experiment:
     # create_sharded: True
     channel_wise: True
     channel_shuffle: False
+    multi_conv: True
+    satmae: True
     mask_tokens_encoder: False
     mask_tokens_decoder: True
     mask_tokens_reduction_encoder: False
-    mask_tokens_reduction_decoder: True
+    mask_tokens_reduction_decoder: False
     norm_pix_loss: False
     num_in_channels: 12
     num_out_channels: 12
@@ -59,13 +61,13 @@ experiment:
     lr: 1.5e-4
     lr_min: 0.0
     warmup_lr_init: 0.0
-    num_warmup: 40
+    num_warmup: 20
   datamodule:
     #root_dir: "/scratch/users/mike/data/BigEarthNetStacked"
     root_dir: "/scratch/users/mike/data/FFCV"
     bands: "all"
     num_classes: 19
-    batch_size: 256
+    batch_size: 128
     num_workers: 7
     pin_memory: True
     prefetch_factor: 2

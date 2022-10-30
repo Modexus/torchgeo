@@ -3,9 +3,9 @@ trainer:
   devices: [0,1,2,3]
   precision: "bf16"
   accumulate_grad_batches: 4
-  max_epochs: 30
+  max_epochs: 50
   limit_train_batches: 1.0
-  check_val_every_n_epoch: 1
+  check_val_every_n_epoch: 5
   benchmark: True
   fast_dev_run: False
 experiment:
@@ -26,12 +26,13 @@ experiment:
     #resume_checkpoint: "epoch=99-step=9600.ckpt"
     batch_size: ${experiment.datamodule.batch_size}
     mean_patches: True
-    channel_wise: True
+    channel_wise: False
+    multi_conv: False
     multi_label: True
     in_channels: 12
     out_channels: 1
     num_classes: 19
-    load_checkpoint: "epoch=99-step=9600.ckpt"
+    load_checkpoint: "epoch=399-step=41200.ckpt"
     imagenet_pretrained: False
     optimizer: "ADAMW"
     lr: 1e-3
@@ -47,7 +48,7 @@ experiment:
       - "random_channel_masking"
     mask_kwargs:
       random_channel_masking:
-        num_keep: 200
+        num_keep: 200 #112
         probability: 1.0
   datamodule:
     #root_dir: "/data/users/mike/data/BigEarthNetFixed"

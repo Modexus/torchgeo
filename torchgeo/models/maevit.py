@@ -90,7 +90,9 @@ class EncoderEmbedding(Module):
 
         self.apply(init_weights)
 
-    def forward(self, x: Tensor, channels: tuple[int, ...] = ()) -> Tensor:
+    def forward(
+        self, x: Tensor, channels: tuple[int, ...] = (), mask: Tensor | None = None
+    ) -> Tensor:
         """Forward pass of the encoder embedding module.
 
         First embed the image to patches.
@@ -133,14 +135,7 @@ class EncoderEmbeddingMultipleConv(Module):
         self.mask_tokens_encoder = mask_tokens_encoder
 
         self.embedders = ModuleList(
-            # Conv2d(
-            #     input_dim if not channel_wise else 1,
-            #     embed_dim,
-            #     kernel_size=patch_size,
-            #     stride=patch_size,
-            # )
-            Linear(self.patch_size**2, embed_dim)
-            for _ in range(input_dim)
+            Linear(self.patch_size**2, embed_dim) for _ in range(input_dim)
         )
 
         self.apply(init_weights)
@@ -162,8 +157,6 @@ class EncoderEmbeddingMultipleConv(Module):
         xs = []
         for i, channel in enumerate(channels):
             xx = self.embedders[channel - 1](x[:, i : i + 1])
-            # B, H, PW, _ = xx.shape
-            # xx = xx.view(B, H, PW**2).permute(0, 2, 1)  # BxCxPSxPS -> BxPxH
             xs.append(xx.squeeze())
         x = torch.stack(xs, dim=1).flatten(0, 1)
 
@@ -177,6 +170,66 @@ class EncoderEmbeddingMultipleConv(Module):
         return x
 
 
+class EncoderEmbeddingSatMAE(Module):
+    """Compute the 2d image patch embedding ready to pass to transformer encoder."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int,
+        patch_size: int,
+        image_size: int,
+        channel_wise: bool = False,
+        mask_tokens_encoder: bool = False,
+    ) -> None:
+        """Initialize the encoder embedding module."""
+        super().__init__()
+
+        self.num_patches = (image_size // patch_size) ** 2
+        self.channel_wise = channel_wise
+        self.mask_tokens_encoder = mask_tokens_encoder
+
+        self.embedders = ModuleList(
+            (
+                Conv2d(4, embed_dim, kernel_size=patch_size, stride=patch_size),
+                Conv2d(4, embed_dim, kernel_size=patch_size, stride=patch_size),
+                Conv2d(2, embed_dim, kernel_size=patch_size, stride=patch_size),
+            )
+        )
+
+        self.apply(init_weights)
+
+    def forward(
+        self, x: Tensor, channels: tuple[int, ...] = (), mask: Tensor | None = None
+    ) -> Tensor:
+        """Forward pass of the encoder embedding module.
+
+        First embed the image to patches.
+        Secondly, add the positional embeddings for each patch.
+        Finally, add the channel embeddings if channels are passed.
+        """
+        *_, H, W = x.shape
+        x = x.view(-1, len(channels), H, W)
+        x = x[:, 2:]  # Remove SAR S1
+        xs = [x[:, [0, 1, 2, 6]], x[:, [3, 4, 5, 7]], x[:, [8, 9]]]
+
+        for i, xx in enumerate(xs):
+            xx = self.embedders[i](xx)
+            xx = xx.flatten(-2).permute(0, 2, 1)
+            xs[i] = xx
+
+        x = torch.cat(xs, dim=1)
+        *_, H = x.shape
+
+        x += get_positional_encodings(H, self.num_patches, False, x.device).repeat(3, 1)
+
+        if self.channel_wise:
+            x = x.reshape(-1, 3 * self.num_patches, H)
+            x += get_channel_encodings(H, [1, 2, 3], self.num_patches, x.device)
+
+        return x
+
+
 class MaskedEncoderViT(Module):
     """Vision transformer (ViT) module."""
 
@@ -186,6 +239,8 @@ class MaskedEncoderViT(Module):
         in_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
+        multi_conv: bool = False,
+        satmae: bool = False,
         num_checkpoints: int = 0,
         embed_dim: int = 768,
         depth: int = 12,
@@ -200,18 +255,41 @@ class MaskedEncoderViT(Module):
 
         self.embed_dim = embed_dim
         self.channel_wise = channel_wise
+        self.satmae = satmae
         self.use_mask_tokens_encoder = mask_tokens_encoder
         self.use_mask_tokens_decoder = mask_tokens_decoder
         self.mask_tokens_reduction = mask_tokens_reduction_encoder
 
-        self.embed_module = EncoderEmbeddingMultipleConv(
-            in_channels,
-            embed_dim,
-            patch_size,
-            image_size,
-            channel_wise,
-            mask_tokens_encoder or mask_tokens_decoder,
-        )
+        if multi_conv:
+            if not satmae:
+                self.embed_module = EncoderEmbeddingMultipleConv(
+                    in_channels,
+                    embed_dim,
+                    patch_size,
+                    image_size,
+                    channel_wise,
+                    mask_tokens_encoder or mask_tokens_decoder,
+                )
+            else:
+                self.embed_module = EncoderEmbeddingSatMAE(
+                    in_channels,
+                    embed_dim,
+                    patch_size,
+                    image_size,
+                    channel_wise,
+                    mask_tokens_encoder or mask_tokens_decoder,
+                )
+
+        else:
+            self.embed_module = EncoderEmbedding(
+                in_channels,
+                embed_dim,
+                patch_size,
+                image_size,
+                channel_wise,
+                mask_tokens_encoder or mask_tokens_decoder,
+                satmae,
+            )
         self.num_patches = self.embed_module.num_patches
 
         self.encoder = TransformerEncoder(
@@ -280,8 +358,10 @@ class MaskedEncoderViT(Module):
         x = self.encoder(x)
         x = self.norm(x)
 
-        if self.channel_wise:
+        if self.channel_wise and not self.satmae:
             x, item["mask_decoder"] = self.mean_channels(x, mask)
+        else:
+            item["mask_decoder"] = mask
 
         return x
 
@@ -312,6 +392,7 @@ class MaskedDecoderViT(Module):
         out_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
+        satmae: bool = False,
         num_checkpoints: int = 0,
         depth: int = 2,
         num_heads: int = 1,
@@ -328,14 +409,14 @@ class MaskedDecoderViT(Module):
         self.embed_dim = embed_dim
         self.decoder_embed_dim = decoder_embed_dim
         self.channel_wise = channel_wise
+        self.satmae = satmae
 
-        out_features = patch_size**2
+        self.out_features = patch_size**2
         if not channel_wise:
-            out_features *= out_channels
+            self.out_features *= out_channels
 
         self.embed_module = DecoderEmbedding(embed_dim, decoder_embed_dim)
         self.norm = LayerNorm(decoder_embed_dim)
-        self.predictor = Mlp(in_features=decoder_embed_dim, out_features=out_features)
 
         if self.mask_tokens_decoder:
             self.encoder = TransformerEncoder(
@@ -344,10 +425,19 @@ class MaskedDecoderViT(Module):
 
         self.apply(init_weights)
 
-        self.predictors = ModuleList(
-            Mlp(in_features=decoder_embed_dim, out_features=out_features)
-            for _ in range(out_channels)
-        )
+        if not self.satmae:
+            self.predictors = ModuleList(
+                Mlp(in_features=decoder_embed_dim, out_features=self.out_features)
+                for _ in range(out_channels)
+            )
+        elif self.channel_wise:
+            self.predictors = Mlp(
+                in_features=decoder_embed_dim * 3, out_features=self.out_features * 12
+            )
+        else:
+            self.predictor = Mlp(
+                in_features=decoder_embed_dim, out_features=self.out_features
+            )
 
     def apply_mask_tokens(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
         """Apply mask tokens to the decoder input."""
@@ -366,7 +456,11 @@ class MaskedDecoderViT(Module):
                 self.decoder_embed_dim, self.num_patches, self.channel_wise, x.device
             ).repeat(len(mask) // self.num_patches, 1)[~mask]
 
-            if self.mask_tokens_reduction_decoder:
+            if self.satmae:
+                mask_tokens = mask_tokens.repeat(1, 3, 1)
+                mask_tokens[:, ~mask] = x
+                x = mask_tokens
+            elif self.mask_tokens_reduction_decoder:
                 x = reduce_mask_token(x, mask, mask_tokens, self.num_patches)
             else:
                 x = torch.cat([mask_tokens, x], dim=1)
@@ -394,15 +488,28 @@ class MaskedDecoderViT(Module):
             return cast(Tensor, self.predictor(x))
 
         x = x.repeat(1, len(channels), 1)
-        if len(channels):
-            B, PS, H = x.shape
-            x += get_channel_encodings(H, channels, self.num_patches, x.device)
+        B, PS, H = x.shape
 
         x = x.view(B, len(channels), PS // len(channels), H)
         xs = []
         for i, channel in enumerate(channels):
             xs.append(self.predictors[channel - 1](x[:, i : i + 1]))
         x = torch.cat(xs, dim=1).flatten(1, 2)
+
+        return x
+
+    def predict_satmae_predictors(self, x: Tensor, channels: tuple[int, ...]) -> Tensor:
+        """Predict the pixel values of the image patch-by-patch."""
+        B, _, H = x.shape
+        x = x.view(B, 3, self.num_patches, H).transpose(1, 2)
+        x = x.flatten(-2)
+
+        x = self.predictors(x)
+        x = (
+            x.view(B, self.num_patches, 12, self.out_features)
+            .transpose(1, 2)
+            .flatten(1, 2)
+        )
 
         return x
 
@@ -418,8 +525,11 @@ class MaskedDecoderViT(Module):
             x = self.apply_mask_tokens(x, mask)
             x = self.encoder(x)
             x = self.norm(x)
+        if self.satmae:
+            x = self.predict_satmae_predictors(x, tuple(channels))
+        else:
             x = x[:, : self.num_patches]
-        x = self.predict_multiple_predictors(x, tuple(channels))
+            x = self.predict_multiple_predictors(x, tuple(channels))
         return x
 
 
@@ -433,6 +543,8 @@ class MaskedAutoencoderViT(Module):
         image_size: int,
         patch_size: int = 16,
         channel_wise: bool = False,
+        multi_conv: bool = False,
+        satmae: bool = False,
         num_checkpoints_encoder: int = 0,
         num_checkpoints_decoder: int = 0,
         embed_dim: int = 1024,
@@ -455,6 +567,8 @@ class MaskedAutoencoderViT(Module):
             in_channels=12,  # IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
+            multi_conv=multi_conv,
+            satmae=satmae,
             num_checkpoints=num_checkpoints_encoder,
             embed_dim=embed_dim,
             depth=depth,
@@ -472,6 +586,7 @@ class MaskedAutoencoderViT(Module):
             out_channels=12,  # IN_CHANNELS[sensor][bands],
             patch_size=patch_size,
             channel_wise=channel_wise,
+            satmae=satmae,
             num_checkpoints=num_checkpoints_decoder,
             depth=decoder_depth,
             num_heads=decoder_num_heads,

@@ -6,6 +6,7 @@
 from typing import Any, cast
 
 import torch
+import wandb
 from kornia import augmentation as K
 from pytorch_lightning.core.lightning import LightningModule
 from pytorch_lightning.utilities.types import LRSchedulerTypeUnion
@@ -15,7 +16,6 @@ from torch.nn.modules import Module, Sequential
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torchvision.utils import make_grid
 
-import wandb
 from torchgeo.models.utils import reduce_mask_token
 
 from ..models import MaskedAutoencoderHiViT

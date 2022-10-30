@@ -121,17 +121,7 @@ def get_channel_encodings(
     device: str | torch.device,
 ) -> Tensor:
     """Get the channel encodings for the given channels."""
-    channels_sorted, channel_order = torch.tensor(
-        channels, dtype=torch.float, device=device
-    ).sort()
-
-    channel_encoding = get_channel_encoding(
-        embed_dim, tuple(channels_sorted.tolist()), num_patches, device
-    )
-
-    channel_encoding = channel_encoding.view(len(channels), num_patches, embed_dim)[
-        channel_order.argsort()
-    ].flatten(0, 1)
+    channel_encoding = get_channel_encoding(embed_dim, channels, num_patches, device)
 
     return channel_encoding
 
