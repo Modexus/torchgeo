@@ -108,6 +108,8 @@ class EmbeddingEvaluator(LightningModule):
         self.batch_size = self.hyperparams.get("batch_size", 256)
         self.linear_probing = self.hyperparams.get("linear_probing", False)
         self.multi_label = self.hyperparams.get("multi_label", False)
+        self.layer_wise_decay = self.hyperparams.get("layer_wise_decay", True)
+        self.num_batches = self.hyperparams.get("num_batches", 1536)
 
         image_size = _to_tuple(self.hyperparams["image_size"])
         self.crop_size = _to_tuple(self.hyperparams.get("crop_size", image_size))
@@ -120,20 +122,15 @@ class EmbeddingEvaluator(LightningModule):
         self.train_metrics = MetricCollection(
             {
                 "OverallAccuracy": Accuracy(
-                    num_classes=self.hyperparams["num_classes"],
-                    average="micro",
-                    multiclass=False if self.multi_label else None,
+                    num_classes=self.hyperparams["num_classes"], average="micro"
                 ),
                 "AverageAccuracy": Accuracy(
-                    num_classes=self.hyperparams["num_classes"],
-                    average="macro",
-                    multiclass=False if self.multi_label else None,
+                    num_classes=self.hyperparams["num_classes"], average="macro"
                 ),
                 "F1Score": FBetaScore(
                     num_classes=self.hyperparams["num_classes"],
                     beta=1.0,
                     average="micro",
-                    multiclass=False if self.multi_label else None,
                 ),
                 "AveragePrecision": AveragePrecision(
                     self.hyperparams["num_classes"], average="macro"
@@ -259,13 +256,16 @@ class EmbeddingEvaluator(LightningModule):
 
         self.mask_fns = self.hyperparams.get("mask_fns", None)
         self.mask_kwargs = self.hyperparams.get("mask_kwargs", None)
+        self.mask_num_channels = self.hyperparams.get(
+            "mask_num_channels", self.in_channels if self.channel_wise else 1
+        )
 
         mask = (
             generate_mask(
                 self.mask_fns,
                 self.mask_kwargs,
                 self.num_patches,
-                self.in_channels if self.channel_wise else 1,
+                self.mask_num_channels,
                 self.device,
             ).flatten()
             if self.mask_fns is not None
@@ -351,40 +351,48 @@ class EmbeddingEvaluator(LightningModule):
         actual_lr = lr * effective_batch_size / 256
         optimizer_kwargs = self.hyperparams.get("optimizer_kwargs", {})
 
-        # Layer-wise LR decay TODO: REMOVE AND TEST AGAIN
-        params = param_groups_lrd(self.encoder.encoder)
-        params += [
-            {"params": p, "weight_decay": optimizer_kwargs["weight_decay"]}
-            for p in self.classifier.parameters()
-        ]
-
-        optimizer = optimizer_class(params=params, lr=actual_lr, **optimizer_kwargs)
-        #     self.trainer.model.parameters(), lr=actual_lr, **optimizer_kwargs
-        # )
+        if self.layer_wise_decay:
+            params = param_groups_lrd(self.encoder.encoder)
+            params += [
+                {"params": p, "weight_decay": optimizer_kwargs["weight_decay"]}
+                for p in self.classifier.parameters()
+            ]
+            optimizer = optimizer_class(params=params, lr=actual_lr, **optimizer_kwargs)
+        else:
+            optimizer = optimizer_class(
+                params=self.trainer.model.parameters(), lr=actual_lr, **optimizer_kwargs
+            )
 
         lr_min = self.hyperparams.get("lr_min", 1e-6)
         warmup_lr_init = self.hyperparams.get("warmup_lr_init", 1.5e-7)
         num_warmup = self.hyperparams.get("num_warmup", 10)
-        # scheduler = CosineLRScheduler(
-        #     optimizer=optimizer,
-        #     t_initial=self.trainer.max_epochs
-        #     * 768
-        #     // self.trainer.accumulate_grad_batches,  # 263 // 4 = 65 bc of acc grad
-        #     lr_min=lr_min,
-        #     cycle_mul=1.0,
-        #     cycle_limit=1,
-        #     warmup_t=num_warmup * 768 // self.trainer.accumulate_grad_batches,
-        #     warmup_lr_init=warmup_lr_init,
-        # )
-        scheduler = LayerWiseDecayScheduler(
-            optimizer=optimizer,
-            lr=actual_lr,
-            min_lr=lr_min,
-            num_warmup=num_warmup * 506 // self.trainer.accumulate_grad_batches,
-            max_epochs=self.trainer.max_epochs
-            * 506
-            // self.trainer.accumulate_grad_batches,
-        )
+
+        if self.layer_wise_decay:
+            scheduler = LayerWiseDecayScheduler(
+                optimizer=optimizer,
+                lr=actual_lr,
+                min_lr=lr_min,
+                num_warmup=num_warmup
+                * self.num_batches
+                // self.trainer.accumulate_grad_batches,
+                max_epochs=self.trainer.max_epochs
+                * self.num_batches
+                // self.trainer.accumulate_grad_batches,
+            )
+        else:
+            scheduler = CosineLRScheduler(
+                optimizer=optimizer,
+                t_initial=self.trainer.max_epochs
+                * self.num_batches
+                // self.trainer.accumulate_grad_batches,
+                lr_min=lr_min,
+                cycle_mul=1.0,
+                cycle_limit=1,
+                warmup_t=num_warmup
+                * self.num_batches
+                // self.trainer.accumulate_grad_batches,
+                warmup_lr_init=warmup_lr_init,
+            )
 
         return {
             "optimizer": optimizer,
@@ -411,7 +419,9 @@ class EmbeddingEvaluator(LightningModule):
         """Perform a step of the model."""
         batch = args[0]
         x = batch["image"] if isinstance(batch, dict) else batch[0]
-        x = x.permute(0, 3, 1, 2)[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        x = x.permute(0, 3, 1, 2)  # Only ffcv, wrong order by mistake
+        x = x[:, [3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
+        # x = x[:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]]
         y = batch["label"] if isinstance(batch, dict) else batch[1]
         y = y.squeeze()
 
@@ -421,25 +431,22 @@ class EmbeddingEvaluator(LightningModule):
                 if x.dtype != torch.bfloat16
                 else self.augment(x.half(), stage).bfloat16()
             )
-            mask_kwargs = deepcopy(self.mask_kwargs)
-            # if stage == "val":
-            #     mask_kwargs["random_channel_masking"]["num_keep"] = 750
             mask = (
                 generate_mask(
                     self.mask_fns,
                     self.mask_kwargs,
                     self.num_patches,
-                    self.in_channels if self.channel_wise else 1,
+                    self.mask_num_channels,
                     x.device,
                 ).flatten()
                 if self.mask_fns is not None
                 else None
             )
 
-        latent = self.get_latent(x, mask)
-        loss = self.evaluate_classification(latent, y, stage)
+        x = self.get_latent(x, mask)
+        loss = self.evaluate_classification(x, y, stage)
 
-        return {"loss": loss, "latent": latent}
+        return {"loss": loss}
 
     def get_latent(self, x: Tensor, mask: Tensor) -> Tensor:
         """TODO: Docstring."""
@@ -494,9 +501,15 @@ class EmbeddingEvaluator(LightningModule):
 
         return item["loss"]
 
+    def training_epoch_end(self, outputs):
+        self.metrics["train"].reset()
+
+    def validation_epoch_end(self, outputs):
+        self.metrics["val"].reset()
+
     def validation_step(self, *args: Any, **kwargs: Any) -> Any:
         """Perform a validation step of the model."""
-        self.shared_step("val", *args, **kwargs)
+        _ = self.shared_step("val", *args, **kwargs)
 
     def test_step(self, *args: Any, **kwargs: Any) -> Any:
         """Perform a test step of the model."""
@@ -520,16 +533,9 @@ class EmbeddingEvaluator(LightningModule):
         else:
             loss = self.classifier_loss(y_hat, y)
 
-        metrics = self.metrics[stage](y_hat, y)
+        metrics = self.metrics[stage](y_hat.detach(), y.detach())
+        metrics |= {f"{stage}_loss": loss}
 
-        self.log(
-            f"{stage}_loss",
-            loss,
-            on_step=False,
-            on_epoch=True,
-            batch_size=self.batch_size,
-            sync_dist=True,
-        )
         self.log_dict(
             metrics,
             on_step=False,

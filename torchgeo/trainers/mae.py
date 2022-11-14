@@ -293,7 +293,9 @@ class MAETask(LightningModule):
         batch = args[0]
         x = batch["image"] if isinstance(batch, dict) else batch[0]
         x = x.permute(0, 3, 1, 2)[
-            :, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]
+            :,
+            [3, 4, 5, 6, 7, 8, 9, 10, 12, 13]
+            #:, [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13]
         ]  # TODO: Remove permute -> ffcv saved wrong
         _, self.C, *_ = x.shape
 

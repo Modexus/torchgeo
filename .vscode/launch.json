@@ -277,7 +277,7 @@
                 "trainer.accelerator=gpu",
                 "trainer.devices=[0]",
             ],
-            "justMyCode": false
+            "justMyCode": true
         },
         {
             "name": "Python: mae_bigearthnet_linearprobing",
@@ -309,7 +309,7 @@
                 "program.log_dir=/scratch/users/mike/logs",
                 "program.overwrite=False",
                 "logger.offline=True",
-                "trainer.gpus=[0]"
+                "trainer.gpus=[0,1,2,3]"
             ],
             "justMyCode": true
         },

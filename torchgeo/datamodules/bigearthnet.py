@@ -21,6 +21,26 @@ from ..datasets import BigEarthNet
 # https://github.com/pytorch/pytorch/pull/61045
 DataLoader.__module__ = "torch.utils.data"
 
+from torch.utils.data import Dataset
+
+
+class CombineDataset(Dataset):
+    def __init__(self, ds1: Dataset, ds2: Dataset) -> None:
+        self.ds1 = ds1
+        self.ds2 = ds2
+
+        self.ds1_len = len(self.ds1)
+        self.ds2_len = len(self.ds2)
+
+    def __len__(self) -> int:
+        return self.ds1_len + self.ds2_len
+
+    def __getitem__(self, index: int) -> dict:
+        if index < self.ds1_len:
+            return self.ds1[index]
+        else:
+            return self.ds2[index - self.ds1_len]
+
 
 class BigEarthNetDataModule(pl.LightningDataModule):
     """LightningDataModule implementation for the BigEarthNet dataset.
@@ -190,7 +210,23 @@ class BigEarthNetDataModule(pl.LightningDataModule):
             return
 
         transforms = Compose([self.preprocess])
-        self.train_dataset = BigEarthNet(
+        # self.train_dataset = BigEarthNet(
+        #     self.root_dir,
+        #     split="train",
+        #     bands=self.bands,
+        #     num_classes=self.num_classes,
+        #     transforms=transforms,
+        #     load_target=self.load_target,
+        # )
+        # self.val_dataset = BigEarthNet(
+        #     self.root_dir,
+        #     split="val",
+        #     bands=self.bands,
+        #     num_classes=self.num_classes,
+        #     transforms=transforms,
+        #     load_target=self.load_target,
+        # )
+        train_dataset = BigEarthNet(
             self.root_dir,
             split="train",
             bands=self.bands,
@@ -198,7 +234,7 @@ class BigEarthNetDataModule(pl.LightningDataModule):
             transforms=transforms,
             load_target=self.load_target,
         )
-        self.val_dataset = BigEarthNet(
+        val_dataset = BigEarthNet(
             self.root_dir,
             split="val",
             bands=self.bands,
@@ -206,8 +242,12 @@ class BigEarthNetDataModule(pl.LightningDataModule):
             transforms=transforms,
             load_target=self.load_target,
         )
+
+        self.train_dataset = CombineDataset(train_dataset, val_dataset)
+
         self.test_dataset = BigEarthNet(
-            self.root_dir,
+            "/scratch/users/mike/data/BigEarthNet",
+            # self.root_dir,
             split="test",
             bands=self.bands,
             num_classes=self.num_classes,
@@ -264,6 +304,15 @@ class BigEarthNetDataModule(pl.LightningDataModule):
                 batches_ahead=self.batches_ahead,
                 pipelines=self.val_pipeline,
             )
+        # return DataLoader(
+        #     self.test_dataset,
+        #     batch_size=self.batch_size,
+        #     num_workers=self.num_workers,
+        #     shuffle=False,
+        #     pin_memory=self.pin_memory,
+        #     prefetch_factor=self.prefetch_factor,
+        #     drop_last=False,
+        # )
 
         if self.num_workers > 0:
             return DataLoader(

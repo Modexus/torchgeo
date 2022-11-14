@@ -76,7 +76,7 @@ class Augmentations(Module):
                 K.Resize(size=image_size, align_corners=False),
                 K.RandomResizedCrop(
                     size=crop_size,
-                    scale=(0.6, 1.0),
+                    scale=(0.2, 1.0),
                     align_corners=False,
                     resample="BICUBIC",
                 ),

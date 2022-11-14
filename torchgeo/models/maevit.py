@@ -288,7 +288,6 @@ class MaskedEncoderViT(Module):
                 image_size,
                 channel_wise,
                 mask_tokens_encoder or mask_tokens_decoder,
-                satmae,
             )
         self.num_patches = self.embed_module.num_patches
 
@@ -392,6 +391,7 @@ class MaskedDecoderViT(Module):
         out_channels: int,
         patch_size: int = 16,
         channel_wise: bool = False,
+        multi_predictors: bool = True,
         satmae: bool = False,
         num_checkpoints: int = 0,
         depth: int = 2,
@@ -410,6 +410,7 @@ class MaskedDecoderViT(Module):
         self.decoder_embed_dim = decoder_embed_dim
         self.channel_wise = channel_wise
         self.satmae = satmae
+        self.multi_predictors = multi_predictors
 
         self.out_features = patch_size**2
         if not channel_wise:
@@ -423,21 +424,21 @@ class MaskedDecoderViT(Module):
                 decoder_embed_dim, depth, num_heads, mlp_ratio, num_checkpoints
             )
 
-        self.apply(init_weights)
-
         if not self.satmae:
             self.predictors = ModuleList(
                 Mlp(in_features=decoder_embed_dim, out_features=self.out_features)
                 for _ in range(out_channels)
             )
-        elif self.channel_wise:
+        else:
             self.predictors = Mlp(
                 in_features=decoder_embed_dim * 3, out_features=self.out_features * 12
             )
-        else:
-            self.predictor = Mlp(
-                in_features=decoder_embed_dim, out_features=self.out_features
-            )
+
+        # self.predictor = Mlp(
+        #     in_features=decoder_embed_dim, out_features=self.out_features
+        # )
+
+        self.apply(init_weights)
 
     def apply_mask_tokens(self, x: Tensor, mask: Tensor | None = None) -> Tensor:
         """Apply mask tokens to the decoder input."""
@@ -521,15 +522,21 @@ class MaskedDecoderViT(Module):
         mask = cast(Tensor | None, item.get("mask_decoder", None))
 
         x = self.embed_module(x)
+
         if self.mask_tokens_decoder:
             x = self.apply_mask_tokens(x, mask)
             x = self.encoder(x)
             x = self.norm(x)
+
+        x = x[:, : self.num_patches]
+
         if self.satmae:
             x = self.predict_satmae_predictors(x, tuple(channels))
-        else:
-            x = x[:, : self.num_patches]
+        elif self.multi_predictors:
             x = self.predict_multiple_predictors(x, tuple(channels))
+        else:
+            x = self.predict(x, tuple(channels))
+
         return x
 
 
